@@ -5,6 +5,7 @@ import traceback
 import re
 import io
 import base64
+import math
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
 from fastapi import FastAPI, HTTPException
@@ -62,12 +63,32 @@ class DroneShowOutput(BaseModel):
 
 request_lock = asyncio.Lock()
 
-# ----------------- 快速形態學骨架細化 (Zhang-Suen 演算法) -----------------
+# ----------------- 地面停機坪網格生成器 -----------------
+def generate_ground_takeoff_points(total_n: int):
+    """生成整齊排列在地面 Z=0 的矩形陣列"""
+    cols = math.ceil(math.sqrt(total_n * 1.5))
+    rows = math.ceil(total_n / cols)
+    
+    spacing_x = 10.0 / max(cols - 1, 1)
+    spacing_y = 2.0 / max(rows - 1, 1)
+    
+    start_x = -5.0
+    start_y = 3.0
+    
+    points = []
+    for i in range(total_n):
+        r = i // cols
+        c = i % cols
+        px = round(start_x + c * spacing_x, 2)
+        py = round(start_y + r * spacing_y, 2)
+        pz = 0.0
+        points.append({"x": px, "y": py, "z": pz, "color": "#FFFFFF"})
+    return points
+
+# ----------------- 骨架細化與點陣轉換 -----------------
 def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
-    """將厚實筆劃壓成 1 像素寬的中心骨架線，防止雙重邊緣雜點"""
     img = binary_image.copy()
     prev = np.zeros_like(img)
-
     while True:
         # Step 1
         p2 = np.roll(img, -1, axis=0)
@@ -90,7 +111,6 @@ def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
             ((p8 == 0) & (p9 == 1)).astype(int) +
             ((p9 == 0) & (p2 == 1)).astype(int)
         )
-
         c1 = (img == 1) & (neighbors >= 2) & (neighbors <= 6) & (transitions == 1)
         c2 = (p2 * p4 * p6 == 0)
         c3 = (p4 * p6 * p8 == 0)
@@ -117,7 +137,6 @@ def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
             ((p8 == 0) & (p9 == 1)).astype(int) +
             ((p9 == 0) & (p2 == 1)).astype(int)
         )
-
         c1 = (img == 1) & (neighbors >= 2) & (neighbors <= 6) & (transitions == 1)
         c2 = (p2 * p4 * p8 == 0)
         c3 = (p2 * p6 * p8 == 0)
@@ -126,21 +145,18 @@ def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
         if np.array_equal(img, prev):
             break
         prev = img.copy()
-
     return img
 
 def image_to_drone_points(image_bytes: bytes, total_n: int):
     pil_img = Image.open(io.BytesIO(image_bytes))
     rgba_img = pil_img.convert("RGBA")
 
-    # 1. 調整至合適尺寸進行骨架萃取 (140x140)
     target_dim = 140
     w, h = rgba_img.size
     scale = target_dim / max(w, h)
     new_w, new_h = max(20, int(w * scale)), max(20, int(h * scale))
     resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-    # 2. 轉為乾淨的二值化矩陣 (1 代表線條筆劃, 0 代表背景)
     alpha = np.array(resized.split()[-1])
     is_png_transparent = np.any(alpha < 180)
 
@@ -149,75 +165,41 @@ def image_to_drone_points(image_bytes: bytes, total_n: int):
     else:
         gray = resized.convert("L")
         arr = np.array(gray)
-        # 校徽通常是白底黑字：黑色筆劃 < 160
         binary = (arr < 160).astype(np.uint8)
         if np.sum(binary) < 50:
             binary = (arr > 120).astype(np.uint8)
 
-    # 3. 執行骨架細化：把所有粗筆劃提煉為清晰單像素中心線條
     skeleton = zhang_suen_thinning(binary)
-    coords = np.argwhere(skeleton == 1)  # [row, col] -> [y, x]
-
+    coords = np.argwhere(skeleton == 1)
     if len(coords) < 30:
-        # 備援：若骨架點過少則取原筆劃
         coords = np.argwhere(binary == 1)
 
     if len(coords) == 0:
         return []
 
-    # 4. 沿著筆劃骨架平滑排序
-    ordered = [coords[0]]
-    remaining = set(range(1, len(coords)))
-    curr_idx = 0
-
-    if len(coords) > 1200:
-        step = len(coords) // 1200
-        coords = coords[::step]
-        remaining = set(range(1, len(coords)))
-
-    while remaining and len(ordered) < total_n * 2:
-        curr_pt = coords[curr_idx]
-        rem_list = list(remaining)
-        diffs = coords[rem_list] - curr_pt
-        dists = diffs[:, 0]**2 + diffs[:, 1]**2
-        best_match_idx = rem_list[np.argmin(dists)]
-        ordered.append(coords[best_match_idx])
-        remaining.remove(best_match_idx)
-        curr_idx = best_match_idx
-
-    ordered_coords = np.array(ordered)
-
-    # 5. 等弧長均勻取樣剛好 total_n 架
-    if len(ordered_coords) >= total_n:
-        indices = np.linspace(0, len(ordered_coords) - 1, total_n, dtype=int)
-        sampled = ordered_coords[indices]
+    if len(coords) >= total_n:
+        indices = np.linspace(0, len(coords) - 1, total_n, dtype=int)
+        sampled = coords[indices]
     else:
-        repeat_factor = (total_n // len(ordered_coords)) + 1
-        extended = np.tile(ordered_coords, (repeat_factor, 1))
+        repeat_factor = (total_n // len(coords)) + 1
+        extended = np.tile(coords, (repeat_factor, 1))
         sampled = extended[:total_n]
 
-    # 6. 置中放大並映射至 3D 空間
     min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
     min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
     range_r = max(max_r - min_r, 1)
     range_c = max(max_c - min_c, 1)
 
     points = []
-    # X 範圍 [-5.0, 5.0], 高度 Z [1.8, 6.0]
     for r, c in sampled:
         norm_x = (c - min_c) / range_c
         norm_z = (max_r - r) / range_r
-
         px = round(-4.8 + norm_x * 9.6, 2)
         py = 4.0
         pz = round(1.8 + norm_z * 4.2, 2)
-
-        # 預設科技藍光，凸顯校徽乾淨輪廓
         points.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
-
     return points
 
-# ----------------- 中文字型點陣引擎 -----------------
 def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
     if not text.strip():
         return None
@@ -232,7 +214,7 @@ def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
 
     try:
         font = ImageFont.truetype(FONT_PATH, font_size)
-    except Exception as e:
+    except Exception:
         font = ImageFont.load_default()
 
     bbox = draw.textbbox((0, 0), text, font=font)
@@ -302,7 +284,7 @@ async def convert_image_endpoint(req: ImageSceneRequest):
         image_data = base64.b64decode(encoded)
         points = image_to_drone_points(image_data, req.drone_count)
         if not points:
-            raise HTTPException(status_code=400, detail="無法從圖片中提取出明顯輪廓，請使用對比度更高的圖片！")
+            raise HTTPException(status_code=400, detail="無法提取輪廓")
         return {
             "status": "success",
             "scene": {
@@ -352,27 +334,29 @@ async def generate_show(req: ShowRequest):
                 scenes = resp_obj.get("scenes", [])
 
                 for idx, scene in enumerate(scenes):
-                    line_ref = prompt_lines[idx] if idx < len(prompt_lines) else scene.get("name", "")
-                    target_text = extract_target_text(line_ref, is_first_scene=(idx == 0))
+                    # 第 1 幕強制改為精確起飛停機網格
+                    if idx == 0 or "起飛" in scene.get("name", "") or "地面" in scene.get("name", ""):
+                        scene["name"] = "第一幕：地面起飛停機坪"
+                        scene["points"] = generate_ground_takeoff_points(req.drone_count)
+                        continue
 
-                    if not target_text and idx != 0:
+                    line_ref = prompt_lines[idx] if idx < len(prompt_lines) else scene.get("name", "")
+                    target_text = extract_target_text(line_ref, is_first_scene=False)
+
+                    if not target_text:
                         target_text = extract_target_text(scene.get("name", ""), is_first_scene=False)
 
                     if target_text:
-                        print(f"[{req.student_name}] 第 {idx+1} 幕精確匹配文字: [{target_text}] -> 啟動 Pillow 繪製！")
                         color = "#FFD700" if any("\u4e00" <= c <= "\u9fa5" for c in target_text) else "#00F0FF"
                         fixed_pts = render_text_to_points(target_text, req.drone_count, color=color)
                         if fixed_pts:
                             scene["points"] = fixed_pts
 
-                print(f"[{req.student_name}] 成功生成 {req.drone_count} 架無人機演出！")
-                await asyncio.sleep(1.0)
                 return {"status": "success", "data": json.dumps(resp_obj)}
 
             except Exception as e:
                 err_msg = str(e)
-                print(f"嘗試 {attempt} 失敗: {err_msg}")
-                if "503" in err_msg or "UNAVAILABLE" in err_msg:
+                if ("503" in err_msg or "UNAVAILABLE" in err_msg) and attempt < 3:
                     await asyncio.sleep(3.0)
                     continue
                 if attempt == 3:
