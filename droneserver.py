@@ -2,16 +2,16 @@ import os
 import asyncio
 import json
 import traceback
+import re
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import List
 from google import genai
 from google.genai import types
 
 app = FastAPI(title="Drone Show AI Proxy Server")
 
-# 跨來源存取設定 (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -36,7 +36,6 @@ class ShowRequest(BaseModel):
     drone_count: int
     prompt: str
 
-# 定義嚴格的 Pydantic 輸出結構，強制 Gemini 遵守格式輸出
 class Point3D(BaseModel):
     x: float
     y: float
@@ -52,29 +51,114 @@ class DroneShowOutput(BaseModel):
 
 request_lock = asyncio.Lock()
 
-# 強化幾何與視覺對稱性的系統提示詞
-SYSTEM_PROMPT = """你是一位世界頂級的無人機群飛幾何工程師兼視覺總監。
-使用者會提供無人機總架數 N 與演出劇本。請為每一幕計算長度剛好為 N 的 3D 空間點陣。
+# 內建 5x7 點陣標準英文字型（保證字體完美工整）
+FONT_5X7 = {
+    'S': [
+        " ### ",
+        "#   #",
+        "#    ",
+        " ### ",
+        "    #",
+        "#   #",
+        " ### "
+    ],
+    'L': [
+        "#    ",
+        "#    ",
+        "#    ",
+        "#    ",
+        "#    ",
+        "#    ",
+        "#####"
+    ],
+    'H': [
+        "#   #",
+        "#   #",
+        "#   #",
+        "#####",
+        "#   #",
+        "#   #",
+        "#   #"
+    ],
+    'A': [
+        " ### ",
+        "#   #",
+        "#   #",
+        "#####",
+        "#   #",
+        "#   #",
+        "#   #"
+    ],
+    'P': [
+        "#### ",
+        "#   #",
+        "#   #",
+        "#### ",
+        "#    ",
+        "#    ",
+        "#    "
+    ],
+    'Y': [
+        "#   #",
+        "#   #",
+        " # # ",
+        "  #  ",
+        "  #  ",
+        "  #  ",
+        "  #  "
+    ]
+}
 
-【幾何排布核心原則（確保圖形清晰美觀）】：
-1. 輪廓對稱與均勻分佈：
-   - 若為幾何形狀（如圓形、愛心、五角星、雙螺旋、同心圓），請嚴格依照幾何對稱性均勻取樣空間點，點與點之間距離需平滑等距，不得隨機散亂。
-   - 文字或圖標排布（如英文字母）：請將點陣嚴格排列在筆劃骨架上（等距直線或平滑圓弧），維持字形工整清晰。
-2. 空間坐標範圍限制：
-   - X 軸範圍：[-6.0, 6.0]（橫向展開）
-   - Y 軸範圍：[3.5, 4.5]（縱深景深，若為正視圖平面圖形可固定 Y=4.0）
-   - Z 軸範圍：[1.8, 6.0]（飛行高度，第 0 幕地面待命或起飛前固定 Z=0.0）
-3. 架數剛好等於 N：
-   - 每一幕的 points 陣列長度必須剛好等於 N。
-   - 若主圖形只需 M 架 (M < N)，剩餘的 (N - M) 架無人機可作為「外圍背景星光」均勻環繞在周圍，或安排在 (x=0.0, y=6.0, z=6.5) 熄燈隱藏 (color 設為 "rgba(0,0,0,0)")。
-4. 顏色美學：請使用鮮明對比的 Hex 色碼（例如：科技藍 #00F0FF、烈焰紅 #FF3366、璀璨金 #FFD700、純白 #FFFFFF）。
-5. 輸出規範：請嚴格遵守提供的 JSON Schema 結構輸出。
+def generate_text_points(text: str, total_n: int, color="#00F0FF"):
+    text = text.upper()
+    valid_chars = [c for c in text if c in FONT_5X7]
+    if not valid_chars:
+        return None
+    
+    char_w = 5
+    char_h = 7
+    spacing = 2
+    total_w = len(valid_chars) * char_w + (len(valid_chars) - 1) * spacing
+    
+    scale_x = 8.0 / max(total_w, 1)
+    scale_z = 3.2 / char_h
+    start_x = - (total_w * scale_x) / 2.0
+    base_z = 2.2
+    
+    active_points = []
+    for char_idx, char in enumerate(valid_chars):
+        grid = FONT_5X7[char]
+        offset_x = start_x + char_idx * (char_w + spacing) * scale_x
+        for r in range(char_h):
+            for c in range(char_w):
+                if grid[r][c] == '#':
+                    px = round(offset_x + c * scale_x, 2)
+                    pz = round(base_z + (char_h - 1 - r) * scale_z, 2)
+                    active_points.append({"x": px, "y": 4.0, "z": pz, "color": color})
+                    
+    # 如果點數超過 N，均勻抽樣；不足 N，多餘機身於高空熄燈隱身
+    if len(active_points) > total_n:
+        step = len(active_points) / total_n
+        final_points = [active_points[int(i * step)] for i in range(total_n)]
+    else:
+        final_points = active_points[:]
+        while len(final_points) < total_n:
+            final_points.append({"x": 0.0, "y": 6.0, "z": 6.5, "color": "rgba(0,0,0,0)"})
+    return final_points
+
+SYSTEM_PROMPT = """你是一位專業的無人機群飛幾何工程師。
+使用者會提供總架數 N 與演出劇本。請為每一幕計算長度剛好為 N 的 3D 空間點陣。
+
+規則：
+1. 坐標範圍：X [-6.0, 6.0], Y [3.5, 4.5], Z [1.8, 6.0]。地面起飛幕 Z=0。
+2. 圖形請以幾何對稱分布（圓形、龍捲風螺旋、愛心等），每幕長度必須剛好等於 N。
+3. 若某幕為文字排字（如 SLHS），請依據字形骨架排布，若不足架數請熄燈隱身 (color: "rgba(0,0,0,0)")。
+4. 必須嚴格輸出 JSON Schema 結構。
 """
 
 @app.post("/api/generate-show")
 async def generate_show(req: ShowRequest):
     if not GEMINI_API_KEY:
-        print("[ERROR] GEMINI_API_KEY 未設定！")
         raise HTTPException(status_code=500, detail="Server GEMINI_API_KEY is missing")
 
     async with request_lock:
@@ -85,13 +169,10 @@ async def generate_show(req: ShowRequest):
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
         except Exception as e:
-            print(f"[ERROR] Client 初始化失敗: {traceback.format_exc()}")
             raise HTTPException(status_code=500, detail=f"Client init error: {str(e)}")
 
         for attempt in range(1, 4):
             try:
-                print(f"[{model_name}] 正在呼叫幾何生成 (嘗試 {attempt}/3)...")
-
                 def call_gemini():
                     return client.models.generate_content(
                         model=model_name,
@@ -109,11 +190,27 @@ async def generate_show(req: ShowRequest):
                     timeout=90.0
                 )
 
-                resp_text = response.text.strip()
-                _ = json.loads(resp_text)
-                print(f"[{req.student_name}] 成功完成 {req.drone_count} 架無人機幾何陣列生成！")
+                resp_obj = json.loads(response.text.strip())
+                
+                # 自動校準檢查：若劇幕名稱或劇本中包含 SLHS 或 HAPPY，自動注入完美字模
+                for scene in resp_obj.get("scenes", []):
+                    scene_name = scene.get("name", "").upper()
+                    # 偵測是否為排字幕
+                    matched_text = None
+                    if "SLHS" in scene_name or ("SLHS" in req.prompt.upper() and ("校徽" in scene_name or "SLHS" in scene_name or "縮寫" in scene_name)):
+                        matched_text = "SLHS"
+                    elif "HAPPY" in scene_name or ("HAPPY" in req.prompt.upper() and "HAPPY" in scene_name):
+                        matched_text = "HAPPY"
+                        
+                    if matched_text:
+                        print(f"[{req.student_name}] 啟動字模引擎優化劇幕: {scene.get('name')} -> {matched_text}")
+                        fixed_points = generate_text_points(matched_text, req.drone_count, color="#00F0FF")
+                        if fixed_points:
+                            scene["points"] = fixed_points
+
+                print(f"[{req.student_name}] 成功完成 100 架無人機演出生成！")
                 await asyncio.sleep(1.0)
-                return {"status": "success", "data": resp_text}
+                return {"status": "success", "data": json.dumps(resp_obj)}
 
             except Exception as e:
                 err_msg = str(e)
@@ -122,7 +219,6 @@ async def generate_show(req: ShowRequest):
                     await asyncio.sleep(3.0)
                     continue
                 if attempt == 3:
-                    print(f"所有嘗試失敗: {traceback.format_exc()}")
                     raise HTTPException(status_code=500, detail=f"AI 生成失敗: {err_msg}")
 
         raise HTTPException(status_code=500, detail="伺服器忙碌，請稍候重試")
