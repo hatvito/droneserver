@@ -63,7 +63,7 @@ async def generate_show(req: ShowRequest):
     async with request_lock:
         print(f"[{req.student_name}] 開始處理請求，架數: {req.drone_count}")
         user_content = f"無人機總架數：{req.drone_count}\n劇本需求：\n{req.prompt}"
-        candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash-lite"]
+        candidate_models = ["gemini-3.5-flash-lite", "gemini-3.8-flash"]
         last_error_str = "No error recorded"
 
         try:
@@ -88,10 +88,10 @@ async def generate_show(req: ShowRequest):
                             )
                         )
 
-                    # 設定單次請求最多等待 40 秒
+                    # 設定單次請求最多等待 120 秒
                     response = await asyncio.wait_for(
                         asyncio.to_thread(call_gemini),
-                        timeout=40.0
+                        timeout=120.0
                     )
 
                     resp_text = response.text.strip()
