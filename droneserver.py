@@ -62,7 +62,7 @@ async def generate_show(req: ShowRequest):
             
             response = await asyncio.to_thread(
                 client.models.generate_content,
-                model="gemini-1.5-flash",
+                model="gemini-flash-latest",
                 contents=user_content,
                 config=types.GenerateContentConfig(
                     system_instruction=SYSTEM_PROMPT,
