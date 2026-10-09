@@ -10,7 +10,6 @@ from google.genai import types
 
 app = FastAPI(title="Drone Show AI Proxy Server")
 
-# 允許跨來源存取 (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,6 +21,7 @@ app.add_middleware(
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 
 @app.get("/")
+@app.head("/")
 def read_root():
     return {
         "status": "online",
@@ -61,16 +61,22 @@ async def generate_show(req: ShowRequest):
         raise HTTPException(status_code=500, detail="Server GEMINI_API_KEY is missing")
 
     async with request_lock:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        print(f"[{req.student_name}] 開始處理請求，架數: {req.drone_count}")
         user_content = f"無人機總架數：{req.drone_count}\n劇本需求：\n{req.prompt}"
-        candidate_models = ["gemini-3.8-flash"]
-        last_error = None
+        candidate_models = ["gemini-3.8-flash", "gemini-2.5-flash-lite"]
+        last_error_str = "No error recorded"
 
-        print(f"[{req.student_name}] 正在生成 {req.drone_count} 架燈光秀...")
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+        except Exception as e:
+            print(f"[ERROR] Client 初始化失敗: {traceback.format_exc()}")
+            raise HTTPException(status_code=500, detail=f"Client init error: {str(e)}")
 
         for model_name in candidate_models:
-            for attempt in range(2):
+            for attempt in range(1, 4):
                 try:
+                    print(f"[{model_name}] 正在呼叫 (嘗試 {attempt}/3)...")
+
                     def call_gemini():
                         return client.models.generate_content(
                             model=model_name,
@@ -82,8 +88,12 @@ async def generate_show(req: ShowRequest):
                             )
                         )
 
-                    response = await asyncio.to_thread(call_gemini)
-                    
+                    # 設定單次請求最多等待 40 秒
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(call_gemini),
+                        timeout=40.0
+                    )
+
                     resp_text = response.text.strip()
                     if resp_text.startswith("```json"):
                         resp_text = resp_text[7:]
@@ -94,18 +104,21 @@ async def generate_show(req: ShowRequest):
                     resp_text = resp_text.strip()
 
                     _ = json.loads(resp_text)
-                    print(f"[{req.student_name}] 成功使用 {model_name} 生成！")
-                    await asyncio.sleep(2.0)
+                    print(f"[{req.student_name}] 成功使用 {model_name} 完成生成！")
+                    await asyncio.sleep(1.0)
                     return {"status": "success", "data": resp_text}
 
+                except asyncio.TimeoutError:
+                    print(f"[{model_name}] 呼叫逾時 (超過 40 秒)")
+                    last_error_str = f"{model_name} timed out"
+                    break
                 except Exception as e:
-                    last_error = e
-                    err_str = str(e)
-                    print(f"[{model_name}] 嘗試失敗 ({attempt+1}/2): {err_str}")
-                    if "503" in err_str or "UNAVAILABLE" in err_str:
-                        await asyncio.sleep(1.5)
+                    last_error_str = str(e)
+                    print(f"[{model_name}] 呼叫報錯: {last_error_str}")
+                    if "503" in last_error_str or "UNAVAILABLE" in last_error_str:
+                        await asyncio.sleep(2.0)
                         continue
                     break
 
-        print(f"所有模型嘗試均失敗：{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"AI 生成失敗: {str(last_error)}")
+        print(f"所有模型嘗試均失敗，最後錯誤: {last_error_str}")
+        raise HTTPException(status_code=500, detail=f"AI 生成失敗: {last_error_str}")
