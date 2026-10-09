@@ -55,25 +55,59 @@ SYSTEM_PROMPT = """你是一位專業的無人機燈光秀幾何工程師。
 
 @app.post("/api/generate-show")
 async def generate_show(req: ShowRequest):
-    async with request_lock:
-        try:
-            print(f"[{req.student_name}] 正在呼叫 Gemini 生成 {req.drone_count} 架燈光秀...")
-            user_content = f"無人機總架數：{req.drone_count}\n劇本需求：\n{req.prompt}"
-            
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model="gemini-flash-latest",
-                contents=user_content,
-                config=types.GenerateContentConfig(
-                    system_instruction=SYSTEM_PROMPT,
-                    response_mime_type="application/json",
-                    temperature=0.2
-                )
-            )
-            
-            await asyncio.sleep(4.0)
-            return {"status": "success", "data": response.text}
+    if not GEMINI_API_KEY:
+        print("[ERROR] GEMINI_API_KEY 未設定！")
+        raise HTTPException(status_code=500, detail="Server GEMINI_API_KEY is missing")
 
-        except Exception as e:
-            print(f"錯誤：{str(e)}")
-            raise HTTPException(status_code=500, detail=str(e))
+    async with request_lock:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+        user_content = f"無人機總架數：{req.drone_count}\n劇本需求：\n{req.prompt}"
+        
+        # 準備候選模型清單，塞車時自動輪詢
+        candidate_models = ["gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash"]
+        last_error = None
+
+        print(f"[{req.student_name}] 正在生成 {req.drone_count} 架燈光秀...")
+
+        for model_name in candidate_models:
+            for attempt in range(2):  # 每個模型嘗試最多 2 次
+                try:
+                    def call_gemini():
+                        return client.models.generate_content(
+                            model=model_name,
+                            contents=user_content,
+                            config=types.GenerateContentConfig(
+                                system_instruction=SYSTEM_PROMPT,
+                                response_mime_type="application/json",
+                                temperature=0.2
+                            )
+                        )
+
+                    response = await asyncio.to_thread(call_gemini)
+                    
+                    # 處理 JSON 標籤
+                    resp_text = response.text.strip()
+                    if resp_text.startswith("```json"):
+                        resp_text = resp_text[7:]
+                    if resp_text.startswith("```"):
+                        resp_text = resp_text[3:]
+                    if resp_text.endswith("```"):
+                        resp_text = resp_text[:-3]
+                    resp_text = resp_text.strip()
+
+                    _ = json.loads(resp_text)
+                    print(f"[{req.student_name}] 成功使用 {model_name} 生成！")
+                    await asyncio.sleep(2.0)
+                    return {"status": "success", "data": resp_text}
+
+                except Exception as e:
+                    last_error = e
+                    err_str = str(e)
+                    print(f"[{model_name}] 嘗試失敗 ({attempt+1}/2): {err_str}")
+                    if "503" in err_str or "UNAVAILABLE" in err_str:
+                        await asyncio.sleep(1.5)  # 遇 503 短暫等待再試
+                        continue
+                    break  # 若非 503 暫時性錯誤則換下一個模型
+
+        print(f"所有模型嘗試均失敗：{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"AI 生成失敗，請稍後重試: {str(last_error)}")
