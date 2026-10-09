@@ -10,6 +10,7 @@ from google.genai import types
 
 app = FastAPI(title="Drone Show AI Proxy Server")
 
+# 跨來源存取設定 (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,7 +42,8 @@ SYSTEM_PROMPT = """你是一位專業的無人機燈光秀幾何工程師。
 限制：
 1. 坐標範圍：X [-6.0, 6.0], Y [3.5, 4.5], Z [1.8, 6.0]。地面起飛幕 Z=0。
 2. 若某圖形點陣不足 N 架，多餘無人機安排於 Z=6.5, Y=6.0 待命，顏色設定為 "rgba(0,0,0,0)" (熄燈隱身)。
-3. 嚴格輸出純 JSON，格式如下：
+3. 請直接輸出純 JSON 字串，不要有任何前導或後續 Markdown 說明文字。
+格式規範：
 {
   "scenes": [
     {
@@ -84,39 +86,39 @@ async def generate_show(req: ShowRequest):
                             config=types.GenerateContentConfig(
                                 system_instruction=SYSTEM_PROMPT,
                                 response_mime_type="application/json",
-                                temperature=0.2
+                                temperature=0.1
                             )
                         )
 
-                    # 設定單次請求最多等待 120 秒
+                    # 100 架無人機運算量較大，設定 90 秒逾時
                     response = await asyncio.wait_for(
                         asyncio.to_thread(call_gemini),
                         timeout=120.0
                     )
 
                     resp_text = response.text.strip()
-                    if resp_text.startswith("```json"):
-                        resp_text = resp_text[7:]
-                    if resp_text.startswith("```"):
-                        resp_text = resp_text[3:]
-                    if resp_text.endswith("```"):
-                        resp_text = resp_text[:-3]
-                    resp_text = resp_text.strip()
 
+                    # 擷取最外層的大括號，自動剔除任何多餘字元或標記
+                    start_idx = resp_text.find("{")
+                    end_idx = resp_text.rfind("}")
+                    if start_idx != -1 and end_idx != -1:
+                        resp_text = resp_text[start_idx:end_idx + 1]
+
+                    # 驗證 JSON 有效性
                     _ = json.loads(resp_text)
                     print(f"[{req.student_name}] 成功使用 {model_name} 完成生成！")
                     await asyncio.sleep(1.0)
                     return {"status": "success", "data": resp_text}
 
                 except asyncio.TimeoutError:
-                    print(f"[{model_name}] 呼叫逾時 (超過 40 秒)")
+                    print(f"[{model_name}] 呼叫逾時 (超過 90 秒)")
                     last_error_str = f"{model_name} timed out"
                     break
                 except Exception as e:
                     last_error_str = str(e)
                     print(f"[{model_name}] 呼叫報錯: {last_error_str}")
                     if "503" in last_error_str or "UNAVAILABLE" in last_error_str:
-                        await asyncio.sleep(2.0)
+                        await asyncio.sleep(3.0)
                         continue
                     break
 
