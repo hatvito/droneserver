@@ -3,6 +3,8 @@ import asyncio
 import json
 import traceback
 import re
+import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -51,108 +53,74 @@ class DroneShowOutput(BaseModel):
 
 request_lock = asyncio.Lock()
 
-# 內建 5x7 點陣標準英文字型（保證字體完美工整）
-FONT_5X7 = {
-    'S': [
-        " ### ",
-        "#   #",
-        "#    ",
-        " ### ",
-        "    #",
-        "#   #",
-        " ### "
-    ],
-    'L': [
-        "#    ",
-        "#    ",
-        "#    ",
-        "#    ",
-        "#    ",
-        "#    ",
-        "#####"
-    ],
-    'H': [
-        "#   #",
-        "#   #",
-        "#   #",
-        "#####",
-        "#   #",
-        "#   #",
-        "#   #"
-    ],
-    'A': [
-        " ### ",
-        "#   #",
-        "#   #",
-        "#####",
-        "#   #",
-        "#   #",
-        "#   #"
-    ],
-    'P': [
-        "#### ",
-        "#   #",
-        "#   #",
-        "#### ",
-        "#    ",
-        "#    ",
-        "#    "
-    ],
-    'Y': [
-        "#   #",
-        "#   #",
-        " # # ",
-        "  #  ",
-        "  #  ",
-        "  #  ",
-        "  #  "
-    ]
-}
+# ----------------- Pillow 文字點陣引擎 -----------------
+FONT_PATH = "NotoSansTC-Regular.ttf"
 
-def generate_text_points(text: str, total_n: int, color="#00F0FF"):
-    text = text.upper()
-    valid_chars = [c for c in text if c in FONT_5X7]
-    if not valid_chars:
+def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
+    """
+    使用 Pillow 讀取 NotoSans 字型，將任意中英文字串轉成剛好 N 個三維空間座標點
+    """
+    if not text.strip():
         return None
-    
-    char_w = 5
-    char_h = 7
-    spacing = 2
-    total_w = len(valid_chars) * char_w + (len(valid_chars) - 1) * spacing
-    
-    scale_x = 8.0 / max(total_w, 1)
-    scale_z = 3.2 / char_h
-    start_x = - (total_w * scale_x) / 2.0
-    base_z = 2.2
-    
-    active_points = []
-    for char_idx, char in enumerate(valid_chars):
-        grid = FONT_5X7[char]
-        offset_x = start_x + char_idx * (char_w + spacing) * scale_x
-        for r in range(char_h):
-            for c in range(char_w):
-                if grid[r][c] == '#':
-                    px = round(offset_x + c * scale_x, 2)
-                    pz = round(base_z + (char_h - 1 - r) * scale_z, 2)
-                    active_points.append({"x": px, "y": 4.0, "z": pz, "color": color})
-                    
-    # 如果點數超過 N，均勻抽樣；不足 N，多餘機身於高空熄燈隱身
-    if len(active_points) > total_n:
-        step = len(active_points) / total_n
-        final_points = [active_points[int(i * step)] for i in range(total_n)]
+
+    # 1. 建立高解析度黑白畫布
+    canvas_w = 120
+    canvas_h = 60
+    img = Image.new("L", (canvas_w, canvas_h), color=0)
+    draw = ImageDraw.Draw(img)
+
+    # 2. 載入字型（依照字數自動調整字體大小）
+    font_size = 40 if len(text) <= 2 else (30 if len(text) <= 4 else 22)
+    try:
+        font = ImageFont.truetype(FONT_PATH, font_size)
+    except Exception as e:
+        print(f"[WARN] 無法載入 {FONT_PATH}，使用預設字型: {e}")
+        font = ImageFont.load_default()
+
+    # 3. 取得文字邊界並置中繪製
+    bbox = draw.textbbox((0, 0), text, font=font)
+    text_w = bbox[2] - bbox[0]
+    text_h = bbox[3] - bbox[1]
+    draw_x = max(0, (canvas_w - text_w) // 2)
+    draw_y = max(0, (canvas_h - text_h) // 2)
+    draw.text((draw_x, draw_y), text, font=font, fill=255)
+
+    # 4. 提取白色像素座標
+    img_arr = np.array(img)
+    stroke_coords = np.argwhere(img_arr > 120)  # [[row, col], ...]
+
+    if len(stroke_coords) == 0:
+        return None
+
+    # 5. 均勻抽樣剛好 N 顆點
+    if len(stroke_coords) >= total_n:
+        indices = np.linspace(0, len(stroke_coords) - 1, total_n, dtype=int)
+        sampled = stroke_coords[indices]
     else:
-        final_points = active_points[:]
-        while len(final_points) < total_n:
-            final_points.append({"x": 0.0, "y": 6.0, "z": 6.5, "color": "rgba(0,0,0,0)"})
-    return final_points
+        # 若筆劃點不足 N 架，現有點全用，其餘補熄燈隱身點
+        sampled = stroke_coords
+
+    points = []
+    # 座標映射：橫向寬度 [-5.5, 5.5], Y=4.0, 高度 Z [2.0, 5.6]
+    for r, c in sampled:
+        px = round(-5.5 + (c / canvas_w) * 11.0, 2)
+        py = 4.0
+        pz = round(2.0 + ((canvas_h - r) / canvas_h) * 3.6, 2)
+        points.append({"x": px, "y": py, "z": pz, "color": color})
+
+    # 多餘架數安排在上方熄燈隱身待命
+    while len(points) < total_n:
+        points.append({"x": 0.0, "y": 6.0, "z": 6.5, "color": "rgba(0,0,0,0)"})
+
+    return points
 
 SYSTEM_PROMPT = """你是一位專業的無人機群飛幾何工程師。
 使用者會提供總架數 N 與演出劇本。請為每一幕計算長度剛好為 N 的 3D 空間點陣。
 
 規則：
 1. 坐標範圍：X [-6.0, 6.0], Y [3.5, 4.5], Z [1.8, 6.0]。地面起飛幕 Z=0。
-2. 圖形請以幾何對稱分布（圓形、龍捲風螺旋、愛心等），每幕長度必須剛好等於 N。
-3. 若某幕為文字排字（如 SLHS），請依據字形骨架排布，若不足架數請熄燈隱身 (color: "rgba(0,0,0,0)")。
+2. 幾何形狀（如圓形、龍捲風螺旋、愛心等）請均勻分佈。
+3. 若某幕為文字排字（如 SLHS、中文名字），請在劇幕名稱中明確寫出「文字：XXX」（例如「文字：SLHS」或「排字：士」）。
 4. 必須嚴格輸出 JSON Schema 結構。
 """
 
@@ -191,24 +159,31 @@ async def generate_show(req: ShowRequest):
                 )
 
                 resp_obj = json.loads(response.text.strip())
-                
-                # 自動校準檢查：若劇幕名稱或劇本中包含 SLHS 或 HAPPY，自動注入完美字模
-                for scene in resp_obj.get("scenes", []):
-                    scene_name = scene.get("name", "").upper()
-                    # 偵測是否為排字幕
-                    matched_text = None
-                    if "SLHS" in scene_name or ("SLHS" in req.prompt.upper() and ("校徽" in scene_name or "SLHS" in scene_name or "縮寫" in scene_name)):
-                        matched_text = "SLHS"
-                    elif "HAPPY" in scene_name or ("HAPPY" in req.prompt.upper() and "HAPPY" in scene_name):
-                        matched_text = "HAPPY"
-                        
-                    if matched_text:
-                        print(f"[{req.student_name}] 啟動字模引擎優化劇幕: {scene.get('name')} -> {matched_text}")
-                        fixed_points = generate_text_points(matched_text, req.drone_count, color="#00F0FF")
-                        if fixed_points:
-                            scene["points"] = fixed_points
 
-                print(f"[{req.student_name}] 成功完成 100 架無人機演出生成！")
+                # ----------------- 智慧字模攔截與修復 -----------------
+                # 遍歷每一幕，若發現包含中英文文字排排字需求，自動套用 Pillow 精準點陣
+                for scene in resp_obj.get("scenes", []):
+                    scene_name = scene.get("name", "")
+                    target_text = None
+
+                    # 匹配規則：劇本中或劇幕名稱中常見的文字關鍵詞
+                    if "SLHS" in scene_name.upper() or "SLHS" in req.prompt.upper() and ("校徽" in scene_name or "縮寫" in scene_name):
+                        target_text = "SLHS"
+                    elif "HAPPY" in scene_name.upper():
+                        target_text = "HAPPY"
+                    else:
+                        # 檢查是否有其他中文字指定（例如「排成『士』」或「文字：林」）
+                        match = re.search(r'(?:排成|文字[：:]|排字[：:]|字樣[：:]|寫出)\s*[「『"“]?([\u4e00-\u9fa5A-Za-z0-9]+)[」』"”]?|([「『][\u4e00-\u9fa5A-Za-z0-9]+[」』])', scene_name)
+                        if match:
+                            target_text = (match.group(1) or match.group(2) or "").strip("「」『』\"'")
+
+                    if target_text:
+                        print(f"[{req.student_name}] 偵測到文字排布，啟動 Pillow 向量點陣: {target_text}")
+                        fixed_pts = render_text_to_points(target_text, req.drone_count, color="#00F0FF")
+                        if fixed_pts:
+                            scene["points"] = fixed_pts
+
+                print(f"[{req.student_name}] 成功生成 {req.drone_count} 架無人機演出！")
                 await asyncio.sleep(1.0)
                 return {"status": "success", "data": json.dumps(resp_obj)}
 
