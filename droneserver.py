@@ -1,19 +1,16 @@
 import os
 import asyncio
+import json
+import traceback
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
 
-# ----------------- 1. 讀取雲端環境變數 -----------------
-# 優先讀取 Render 後台設定的環境變數，若本機測試沒有設定則讀預設值
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "你的本機備用KEY")
-
-client = genai.Client(api_key=GEMINI_API_KEY)
 app = FastAPI(title="Drone Show AI Proxy Server")
 
-# 允許全網跨來源存取
+# 允許跨來源存取 (CORS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,12 +19,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 根目錄健康檢查（方便確認伺服器是否正常運作）
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+
 @app.get("/")
 def read_root():
-    return {"status": "online", "message": "無人機群飛 AI 伺服器運作中！"}
+    return {
+        "status": "online",
+        "has_api_key": bool(GEMINI_API_KEY),
+        "message": "無人機群飛 AI 伺服器運作中！"
+    }
 
-# ----------------- 2. 資料結構定義 -----------------
 class ShowRequest(BaseModel):
     student_name: str
     drone_count: int
@@ -62,15 +63,13 @@ async def generate_show(req: ShowRequest):
     async with request_lock:
         client = genai.Client(api_key=GEMINI_API_KEY)
         user_content = f"無人機總架數：{req.drone_count}\n劇本需求：\n{req.prompt}"
-        
-        # 準備候選模型清單，塞車時自動輪詢
-        candidate_models = ["gemini-flash-latest", "gemini-2.0-flash", "gemini-2.5-flash"]
+        candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
         last_error = None
 
         print(f"[{req.student_name}] 正在生成 {req.drone_count} 架燈光秀...")
 
         for model_name in candidate_models:
-            for attempt in range(2):  # 每個模型嘗試最多 2 次
+            for attempt in range(2):
                 try:
                     def call_gemini():
                         return client.models.generate_content(
@@ -85,7 +84,6 @@ async def generate_show(req: ShowRequest):
 
                     response = await asyncio.to_thread(call_gemini)
                     
-                    # 處理 JSON 標籤
                     resp_text = response.text.strip()
                     if resp_text.startswith("```json"):
                         resp_text = resp_text[7:]
@@ -105,9 +103,9 @@ async def generate_show(req: ShowRequest):
                     err_str = str(e)
                     print(f"[{model_name}] 嘗試失敗 ({attempt+1}/2): {err_str}")
                     if "503" in err_str or "UNAVAILABLE" in err_str:
-                        await asyncio.sleep(1.5)  # 遇 503 短暫等待再試
+                        await asyncio.sleep(1.5)
                         continue
-                    break  # 若非 503 暫時性錯誤則換下一個模型
+                    break
 
         print(f"所有模型嘗試均失敗：{traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"AI 生成失敗，請稍後重試: {str(last_error)}")
+        raise HTTPException(status_code=500, detail=f"AI 生成失敗: {str(last_error)}")
