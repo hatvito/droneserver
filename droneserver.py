@@ -63,7 +63,7 @@ async def generate_show(req: ShowRequest):
     async with request_lock:
         client = genai.Client(api_key=GEMINI_API_KEY)
         user_content = f"無人機總架數：{req.drone_count}\n劇本需求：\n{req.prompt}"
-        candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash"]
+        candidate_models = ["gemini-3.8-flash"]
         last_error = None
 
         print(f"[{req.student_name}] 正在生成 {req.drone_count} 架燈光秀...")
