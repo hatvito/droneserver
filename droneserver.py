@@ -45,7 +45,7 @@ class ShowRequest(BaseModel):
 class ImageSceneRequest(BaseModel):
     image_base64: str
     drone_count: int
-    scene_name: Optional[str] = "自訂圖片造型"
+    scene_name: Optional[str] = "校徽圖形"
 
 class Point3D(BaseModel):
     x: float
@@ -62,77 +62,158 @@ class DroneShowOutput(BaseModel):
 
 request_lock = asyncio.Lock()
 
-# ----------------- 圖片轉點陣核心引擎 -----------------
-def image_to_drone_points(image_bytes: bytes, total_n: int):
-    """
-    將使用者上傳的圖片轉為剛好 N 個三維空間座標點
-    """
-    pil_img = Image.open(io.BytesIO(image_bytes))
-    
-    # 統一轉成 RGBA
-    rgba_img = pil_img.convert("RGBA")
-    w, h = rgba_img.size
-    
-    # 等比例縮放至合理解析度加速計算
-    max_dim = 150
-    scale = max_dim / max(w, h)
-    new_w = max(10, int(w * scale))
-    new_h = max(10, int(h * scale))
-    resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-    
-    # 提取有效線條點：
-    # 1. 若有透明背景 (PNG)，以 Alpha > 60 為線條
-    # 2. 若為白色背景圖檔，以灰階亮線/邊緣濾鏡提取線條
-    alpha_channel = np.array(resized.split()[-1])
-    is_transparent_png = np.any(alpha_channel < 200)
+# ----------------- 快速形態學骨架細化 (Zhang-Suen 演算法) -----------------
+def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
+    """將厚實筆劃壓成 1 像素寬的中心骨架線，防止雙重邊緣雜點"""
+    img = binary_image.copy()
+    prev = np.zeros_like(img)
 
-    if is_transparent_png:
-        # 有透明度遮罩，抓取非透明圖案邊界
-        gray = resized.convert("L")
-        edge = gray.filter(ImageFilter.FIND_EDGES)
-        edge_arr = np.array(edge)
-        active_coords = np.argwhere((alpha_channel > 80) & (edge_arr > 30))
-        if len(active_coords) < total_n // 2:
-            # 若邊緣太少，直接取整個實體輪廓
-            active_coords = np.argwhere(alpha_channel > 100)
+    while True:
+        # Step 1
+        p2 = np.roll(img, -1, axis=0)
+        p3 = np.roll(np.roll(img, -1, axis=0), 1, axis=1)
+        p4 = np.roll(img, 1, axis=1)
+        p5 = np.roll(np.roll(img, 1, axis=0), 1, axis=1)
+        p6 = np.roll(img, 1, axis=0)
+        p7 = np.roll(np.roll(img, 1, axis=0), -1, axis=1)
+        p8 = np.roll(img, -1, axis=1)
+        p9 = np.roll(np.roll(img, -1, axis=0), -1, axis=1)
+
+        neighbors = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
+        transitions = (
+            ((p2 == 0) & (p3 == 1)).astype(int) +
+            ((p3 == 0) & (p4 == 1)).astype(int) +
+            ((p4 == 0) & (p5 == 1)).astype(int) +
+            ((p5 == 0) & (p6 == 1)).astype(int) +
+            ((p6 == 0) & (p7 == 1)).astype(int) +
+            ((p7 == 0) & (p8 == 1)).astype(int) +
+            ((p8 == 0) & (p9 == 1)).astype(int) +
+            ((p9 == 0) & (p2 == 1)).astype(int)
+        )
+
+        c1 = (img == 1) & (neighbors >= 2) & (neighbors <= 6) & (transitions == 1)
+        c2 = (p2 * p4 * p6 == 0)
+        c3 = (p4 * p6 * p8 == 0)
+        img[c1 & c2 & c3] = 0
+
+        # Step 2
+        p2 = np.roll(img, -1, axis=0)
+        p3 = np.roll(np.roll(img, -1, axis=0), 1, axis=1)
+        p4 = np.roll(img, 1, axis=1)
+        p5 = np.roll(np.roll(img, 1, axis=0), 1, axis=1)
+        p6 = np.roll(img, 1, axis=0)
+        p7 = np.roll(np.roll(img, 1, axis=0), -1, axis=1)
+        p8 = np.roll(img, -1, axis=1)
+        p9 = np.roll(np.roll(img, -1, axis=0), -1, axis=1)
+
+        neighbors = p2 + p3 + p4 + p5 + p6 + p7 + p8 + p9
+        transitions = (
+            ((p2 == 0) & (p3 == 1)).astype(int) +
+            ((p3 == 0) & (p4 == 1)).astype(int) +
+            ((p4 == 0) & (p5 == 1)).astype(int) +
+            ((p5 == 0) & (p6 == 1)).astype(int) +
+            ((p6 == 0) & (p7 == 1)).astype(int) +
+            ((p7 == 0) & (p8 == 1)).astype(int) +
+            ((p8 == 0) & (p9 == 1)).astype(int) +
+            ((p9 == 0) & (p2 == 1)).astype(int)
+        )
+
+        c1 = (img == 1) & (neighbors >= 2) & (neighbors <= 6) & (transitions == 1)
+        c2 = (p2 * p4 * p8 == 0)
+        c3 = (p2 * p6 * p8 == 0)
+        img[c1 & c2 & c3] = 0
+
+        if np.array_equal(img, prev):
+            break
+        prev = img.copy()
+
+    return img
+
+def image_to_drone_points(image_bytes: bytes, total_n: int):
+    pil_img = Image.open(io.BytesIO(image_bytes))
+    rgba_img = pil_img.convert("RGBA")
+
+    # 1. 調整至合適尺寸進行骨架萃取 (140x140)
+    target_dim = 140
+    w, h = rgba_img.size
+    scale = target_dim / max(w, h)
+    new_w, new_h = max(20, int(w * scale)), max(20, int(h * scale))
+    resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+    # 2. 轉為乾淨的二值化矩陣 (1 代表線條筆劃, 0 代表背景)
+    alpha = np.array(resized.split()[-1])
+    is_png_transparent = np.any(alpha < 180)
+
+    if is_png_transparent:
+        binary = (alpha > 120).astype(np.uint8)
     else:
-        # 一般 JPG 白底黑線圖（黑線為筆劃）
         gray = resized.convert("L")
         arr = np.array(gray)
-        # 黑色/深色筆劃當作線條
-        active_coords = np.argwhere(arr < 180)
-        if len(active_coords) < 10:
-            # 若圖像是黑底白線，反向抓亮色
-            active_coords = np.argwhere(arr > 120)
+        # 校徽通常是白底黑字：黑色筆劃 < 160
+        binary = (arr < 160).astype(np.uint8)
+        if np.sum(binary) < 50:
+            binary = (arr > 120).astype(np.uint8)
 
-    if len(active_coords) == 0:
+    # 3. 執行骨架細化：把所有粗筆劃提煉為清晰單像素中心線條
+    skeleton = zhang_suen_thinning(binary)
+    coords = np.argwhere(skeleton == 1)  # [row, col] -> [y, x]
+
+    if len(coords) < 30:
+        # 備援：若骨架點過少則取原筆劃
+        coords = np.argwhere(binary == 1)
+
+    if len(coords) == 0:
         return []
 
-    # 均勻抽樣至 N 顆點
-    if len(active_coords) >= total_n:
-        indices = np.linspace(0, len(active_coords) - 1, total_n, dtype=int)
-        sampled = active_coords[indices]
+    # 4. 沿著筆劃骨架平滑排序
+    ordered = [coords[0]]
+    remaining = set(range(1, len(coords)))
+    curr_idx = 0
+
+    if len(coords) > 1200:
+        step = len(coords) // 1200
+        coords = coords[::step]
+        remaining = set(range(1, len(coords)))
+
+    while remaining and len(ordered) < total_n * 2:
+        curr_pt = coords[curr_idx]
+        rem_list = list(remaining)
+        diffs = coords[rem_list] - curr_pt
+        dists = diffs[:, 0]**2 + diffs[:, 1]**2
+        best_match_idx = rem_list[np.argmin(dists)]
+        ordered.append(coords[best_match_idx])
+        remaining.remove(best_match_idx)
+        curr_idx = best_match_idx
+
+    ordered_coords = np.array(ordered)
+
+    # 5. 等弧長均勻取樣剛好 total_n 架
+    if len(ordered_coords) >= total_n:
+        indices = np.linspace(0, len(ordered_coords) - 1, total_n, dtype=int)
+        sampled = ordered_coords[indices]
     else:
-        repeat_factor = (total_n // len(active_coords)) + 1
-        extended = np.tile(active_coords, (repeat_factor, 1))
+        repeat_factor = (total_n // len(ordered_coords)) + 1
+        extended = np.tile(ordered_coords, (repeat_factor, 1))
         sampled = extended[:total_n]
 
+    # 6. 置中放大並映射至 3D 空間
+    min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
+    min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
+    range_r = max(max_r - min_r, 1)
+    range_c = max(max_c - min_c, 1)
+
     points = []
-    # 橫向範圍 X: [-5.0, 5.0], Y=4.0, 高度 Z: [1.8, 5.8]
+    # X 範圍 [-5.0, 5.0], 高度 Z [1.8, 6.0]
     for r, c in sampled:
-        px = round(-5.0 + (c / new_w) * 10.0, 2)
+        norm_x = (c - min_c) / range_c
+        norm_z = (max_r - r) / range_r
+
+        px = round(-4.8 + norm_x * 9.6, 2)
         py = 4.0
-        pz = round(1.8 + ((new_h - r) / new_h) * 4.0, 2)
-        
-        # 提取原圖像素顏色
-        r_val, g_val, b_val, _ = resized.getpixel((int(c), int(r)))
-        # 若原圖接近黑色，轉為顯眼的科技亮青色，否則保留原色彩
-        if r_val < 40 and g_val < 40 and b_val < 40:
-            hex_color = "#00FFFF"
-        else:
-            hex_color = f"#{r_val:02X}{g_val:02X}{b_val:02X}"
-            
-        points.append({"x": px, "y": py, "z": pz, "color": hex_color})
+        pz = round(1.8 + norm_z * 4.2, 2)
+
+        # 預設科技藍光，凸顯校徽乾淨輪廓
+        points.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
 
     return points
 
@@ -214,7 +295,6 @@ def extract_target_text(line_text: str, is_first_scene: bool = False):
 
     return None
 
-# 上傳圖片轉無人機點陣的獨立接口
 @app.post("/api/convert-image-to-drone")
 async def convert_image_endpoint(req: ImageSceneRequest):
     try:
@@ -226,7 +306,7 @@ async def convert_image_endpoint(req: ImageSceneRequest):
         return {
             "status": "success",
             "scene": {
-                "name": req.scene_name or "自訂圖片造型",
+                "name": req.scene_name or "校徽造型",
                 "points": points
             }
         }
