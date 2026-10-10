@@ -10,10 +10,12 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
+from google import genai
+from google.genai import types
 
-app = FastAPI(title="Drone Show AI Proxy Server")
+app = FastAPI(title="Drone Show AI Proxy Server - Infinite Creative Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,8 +35,26 @@ def read_root():
         "status": "online",
         "has_api_key": bool(GEMINI_API_KEY),
         "font_exists": os.path.exists(FONT_PATH),
-        "message": "無人機群飛 AI 伺服器運作中！"
+        "message": "無人機群飛 3D 奔放幾何導演引擎運作中！"
     }
+
+# ----------------- 資料模型定義 -----------------
+class PrimitiveElement(BaseModel):
+    shape_type: str = Field(description="圖元類型: text, heart, ring, spiral, sphere, star, cone, wave, ground_grid")
+    ratio: float = Field(default=1.0, description="佔用無人機總數的比例權重 (例如 0.6 代表佔 60% 架數)")
+    text: Optional[str] = Field(default="", description="若為 text 類型時的文字內容，如 '富邦' 或 'SLHS'")
+    center: Optional[List[float]] = Field(default=[0.0, 4.0, 3.8], description="三維中心座標 [x, y, z]")
+    scale: Optional[List[float]] = Field(default=[1.0, 1.0, 1.0], description="三維尺寸縮放係數 [sx, sy, sz]")
+    rotate_deg: Optional[List[float]] = Field(default=[0.0, 0.0, 0.0], description="三維旋轉角度 [rx, ry, rz]，例如斜躺或傾斜")
+    colors: Optional[List[str]] = Field(default=["#00F0FF"], description="色標陣列 (支援多色漸層)，例如 ['#FFFFFF', '#A020F0']")
+    gradient_direction: Optional[str] = Field(default="none", description="漸層方向: none, z_axis_up, z_axis_down, x_axis, y_axis, radial")
+
+class SceneDirective(BaseModel):
+    scene_name: str = Field(description="幕名，例如 '第一幕：地面起飛' 或 '第三幕：富邦立體漸層光環'")
+    elements: List[PrimitiveElement] = Field(description="構成該幕的一組或多組幾何圖元")
+
+class DirectorScript(BaseModel):
+    scenes: List[SceneDirective]
 
 class ShowRequest(BaseModel):
     student_name: str
@@ -47,217 +67,223 @@ class ImageSceneRequest(BaseModel):
     mode: Optional[str] = "pixel"
     scene_name: Optional[str] = "自訂圖片造型"
 
-class Point3D(BaseModel):
-    x: float
-    y: float
-    z: float
-    color: str
-
-class Scene(BaseModel):
-    name: str
-    points: List[Point3D]
-
 request_lock = asyncio.Lock()
 
-COLOR_MAP = {
-    "藍": (0, 140, 255),
-    "深藍": (0, 60, 180),
-    "淺藍": (135, 206, 250),
-    "紫": (170, 40, 250),
-    "深紫": (90, 0, 140),
-    "淺紫": (225, 160, 230),
-    "紅": (255, 40, 40),
-    "粉": (255, 105, 180),
-    "黃": (255, 215, 0),
-    "金": (255, 215, 0),
-    "綠": (50, 205, 50),
-    "橘": (255, 140, 0),
-    "白": (255, 255, 255),
-    "青": (0, 240, 255)
-}
+# ----------------- 3D 數學與多重多色漸層工具 -----------------
+def hex_to_rgb(hex_str: str):
+    hex_str = hex_str.lstrip("#")
+    if len(hex_str) != 6:
+        return (0, 240, 255)
+    return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
 
-def hex_from_rgb(rgb_tuple):
-    r, g, b = [max(0, min(255, int(v))) for v in rgb_tuple]
-    return f"#{r:02X}{g:02X}{b:02X}"
+def rgb_to_hex(r, g, b):
+    return f"#{max(0, min(255, int(r))):02X}{max(0, min(255, int(g))):02X}{max(0, min(255, int(b))):02X}"
 
-def generate_ground_takeoff_points(total_n: int):
-    cols = math.ceil(math.sqrt(total_n * 1.5))
-    rows = math.ceil(total_n / cols)
-    spacing_x = 10.0 / max(cols - 1, 1)
-    spacing_y = 2.5 / max(rows - 1, 1)
-    start_x = -5.0
-    start_y = 2.8
-
-    pts = []
-    for i in range(total_n):
-        r = i // cols
-        c = i % cols
-        px = round(start_x + c * spacing_x, 2)
-        py = round(start_y + r * spacing_y, 2)
-        pts.append({"x": px, "y": py, "z": 0.0, "color": "#FFFFFF"})
-    return pts
-
-# ----------------- 深度與漸層語意解析核心 -----------------
-def parse_multi_char_layout(chars: list, prompt_line: str):
-    num_chars = len(chars)
-    rules = []
-
-    # 1. 深度解析
-    assigned_depths = [4.0] * num_chars
+def interpolate_colors(color_hex_list: List[str], ratio: float):
+    if not color_hex_list:
+        return "#00F0FF"
+    if len(color_hex_list) == 1:
+        return color_hex_list[0]
     
-    # 支援自然語言：「一前一後」、「前後」
-    if "一前一後" in prompt_line or "前、後" in prompt_line or "前後" in prompt_line:
-        if num_chars == 2:
-            assigned_depths = [2.6, 5.2] # 前者在 Y=2.6, 後者在 Y=5.2
-        else:
-            assigned_depths = np.linspace(2.5, 5.5, num_chars).tolist()
-    elif "最前" in prompt_line or "中" in prompt_line:
-        depth_order = []
-        for word, val in [("最前", 2.2), ("前", 3.0), ("中", 4.0), ("後", 5.0), ("最後", 5.8)]:
-            if word in prompt_line:
-                depth_order.append(val)
-        if len(depth_order) >= num_chars:
-            assigned_depths = depth_order[:num_chars]
-        else:
-            assigned_depths = np.linspace(2.5, 5.5, num_chars).tolist()
+    clamped_ratio = max(0.0, min(1.0, ratio))
+    scaled = clamped_ratio * (len(color_hex_list) - 1)
+    idx = int(scaled)
+    t = scaled - idx
 
-    # 2. 顏色與漸層解析
-    has_global_gradient = "漸層" in prompt_line
-    default_base_rgb = (0, 240, 255) # 預設科技藍
+    if idx >= len(color_hex_list) - 1:
+        return color_hex_list[-1]
 
-    for c_idx, ch in enumerate(chars):
-        char_rgb = default_base_rgb
-        char_grad = has_global_gradient
+    c1 = hex_to_rgb(color_hex_list[idx])
+    c2 = hex_to_rgb(color_hex_list[idx + 1])
+    r = c1[0] + (c2[0] - c1[0]) * t
+    g = c1[1] + (c2[1] - c1[1]) * t
+    b = c1[2] + (c2[2] - c1[2]) * t
+    return rgb_to_hex(r, g, b)
 
-        # 針對個別文字尋找顏色子句 (例如：富字為藍色、邦字紫色有漸層)
-        char_match = re.search(rf"{ch}[字為是色\s]*([^，,。]+)", prompt_line)
-        clause = char_match.group(1) if char_match else prompt_line
+def apply_transforms(coords: np.ndarray, center: List[float], scale: List[float], rot_deg: List[float]):
+    """套用 3D 旋轉矩陣、縮放與空間平移"""
+    scaled = coords * np.array(scale)
 
-        for c_name, rgb in COLOR_MAP.items():
-            if c_name in clause:
-                char_rgb = rgb
-                break
-
-        if "漸層" in clause or ("淺" in clause and "深" in clause):
-            char_grad = True
-
-        rules.append({
-            "y": assigned_depths[c_idx],
-            "base_rgb": char_rgb,
-            "has_gradient": char_grad
-        })
-
-    return rules
-
-def render_advanced_text_to_points(text: str, total_n: int, prompt_line: str):
-    if not text.strip():
-        return None
-
-    chars = list(text)
-    num_chars = len(chars)
-    drones_per_char = total_n // num_chars
-    rules = parse_multi_char_layout(chars, prompt_line)
-
-    all_points = []
+    rx, ry, rz = np.radians(rot_deg)
+    # 旋轉矩陣
+    Rx = np.array([[1, 0, 0], [0, math.cos(rx), -math.sin(rx)], [0, math.sin(rx), math.cos(rx)]])
+    Ry = np.array([[math.cos(ry), 0, math.sin(ry)], [0, 1, 0], [-math.sin(ry), 0, math.cos(ry)]])
+    Rz = np.array([[math.cos(rz), -math.sin(rz), 0], [math.sin(rz), math.cos(rz), 0], [0, 0, 1]])
     
-    # 決定字在舞台橫向的跨度 (X 軸)
-    # 如果是一前一後，字可以稍微重疊錯開或左右擺放
-    is_front_back = any(abs(rules[i]["y"] - rules[0]["y"]) > 1.0 for i in range(1, num_chars))
-    
-    total_w = 9.6
-    slot_w = total_w / num_chars if not is_front_back else (total_w * 0.7)
+    R = Rz @ Ry @ Rx
+    rotated = scaled @ R.T
+    transformed = rotated + np.array(center)
+    return transformed
 
-    for c_idx, char in enumerate(chars):
-        rule = rules[c_idx]
-        target_y = rule["y"]
-        base_rgb = rule["base_rgb"]
-        has_gradient = rule["has_gradient"]
+# ----------------- 幾何圖元生成器 -----------------
+def generate_primitive_coords(shape: str, n: int, text_content: str = ""):
+    if shape == "ground_grid":
+        cols = math.ceil(math.sqrt(n * 1.5))
+        rows = math.ceil(n / cols)
+        pts = []
+        for i in range(n):
+            r, c = i // cols, i % cols
+            x = -5.0 + (c / max(cols - 1, 1)) * 10.0
+            y = 2.8 + (r / max(rows - 1, 1)) * 2.4
+            z = 0.0
+            pts.append([x, y, z])
+        return np.array(pts)
 
-        # 每個字單獨建立高解析單字畫布
-        canvas_w = 120
-        canvas_h = 120
-        img = Image.new("L", (canvas_w, canvas_h), color=0)
-        draw = ImageDraw.Draw(img)
+    elif shape == "heart":
+        # 3D 心形曲線 (立體加厚)
+        t = np.linspace(0, 2 * math.pi, n)
+        x = 16 * np.sin(t)**3 / 16.0 * 3.5
+        z = (13 * np.cos(t) - 5 * np.cos(2*t) - 2 * np.cos(3*t) - np.cos(4*t)) / 16.0 * 3.5
+        y = np.random.uniform(-0.35, 0.35, n)
+        return np.column_stack([x, y, z])
 
-        try:
-            font = ImageFont.truetype(FONT_PATH, 96)
-        except Exception:
-            font = ImageFont.load_default()
+    elif shape == "ring":
+        # 環狀 / 行星環
+        theta = np.linspace(0, 2 * math.pi, n)
+        r = np.random.uniform(3.0, 3.4, n)
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        z = np.zeros(n)
+        return np.column_stack([x, y, z])
 
-        bbox = draw.textbbox((0, 0), char, font=font)
-        tw = max(bbox[2] - bbox[0], 1)
-        th = max(bbox[3] - bbox[1], 1)
-        draw.text(((canvas_w - tw) // 2, (canvas_h - th) // 2), char, font=font, fill=255)
+    elif shape == "spiral":
+        # 螺旋 / 龍捲風
+        t = np.linspace(0, 1, n)
+        z = (t - 0.5) * 4.0
+        r = 0.6 + t * 2.8
+        theta = t * 6 * math.pi
+        x = r * np.cos(theta)
+        y = r * np.sin(theta)
+        return np.column_stack([x, y, z])
 
-        img_arr = np.array(img)
-        coords = np.argwhere(img_arr > 90) # [row, col] -> [y, x]
+    elif shape == "sphere":
+        # 費氏球體 (Fibonacci Sphere) 均勻分佈
+        indices = np.arange(0, n, dtype=float) + 0.5
+        phi = np.arccos(1 - 2 * indices / n)
+        theta = math.pi * (1 + 5**0.5) * indices
+        r = 3.0
+        x = r * np.cos(theta) * np.sin(phi)
+        y = r * np.sin(theta) * np.sin(phi)
+        z = r * np.cos(phi)
+        return np.column_stack([x, y, z])
 
-        if len(coords) == 0:
-            continue
+    elif shape == "star":
+        # 五角星
+        angles = np.linspace(0, 4 * math.pi, n)
+        r = 3.2 * (0.5 + 0.5 * (np.sin(5 * angles / 2)**2))
+        x = r * np.cos(angles)
+        z = r * np.sin(angles)
+        y = np.zeros(n)
+        return np.column_stack([x, y, z])
 
-        target_char_count = drones_per_char if c_idx < num_chars - 1 else (total_n - len(all_points))
-
-        # 抽樣無人機
-        if len(coords) >= target_char_count:
-            indices = np.linspace(0, len(coords) - 1, target_char_count, dtype=int)
-            sampled = coords[indices]
-        else:
-            rep = (target_char_count // len(coords)) + 1
-            extended = np.tile(coords, (rep, 1))
-            noise = np.random.uniform(-0.35, 0.35, size=extended.shape)
-            sampled = (extended + noise)[:target_char_count]
-
-        # 計算字的橫向 X 基準點
-        if is_front_back:
-            # 一前一後：前面偏左一點點(-1.5)，後面偏右一點點(+1.5)，具備最佳 3D 透視感
-            char_center_x = -1.8 if c_idx == 0 else 1.8
-            char_width_span = 4.2
-        else:
-            # 正常並排排開
-            char_center_x = -4.5 + (c_idx + 0.5) * (9.0 / num_chars)
-            char_width_span = (8.0 / num_chars) * 0.85
-
-        min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
-        min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
-        range_r = max(max_r - min_r, 1)
-        range_c = max(max_c - min_c, 1)
-
-        for r, c in sampled:
-            # 確保 X 有充裕寬度，絕對不會被壓成一條直線！
-            norm_x = (c - min_c) / range_c
-            px = round((char_center_x - char_width_span / 2) + norm_x * char_width_span, 2)
+    elif shape == "text" or text_content:
+        # 文字骨架點陣
+        chars = list(text_content) if text_content else ["?"]
+        c_count = len(chars)
+        pts_per_c = n // c_count
+        char_coords_list = []
+        
+        for c_idx, ch in enumerate(chars):
+            dim = 120
+            img = Image.new("L", (dim, dim), color=0)
+            draw = ImageDraw.Draw(img)
+            try:
+                font = ImageFont.truetype(FONT_PATH, 92)
+            except Exception:
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), ch, font=font)
+            tw, th = max(bbox[2] - bbox[0], 1), max(bbox[3] - bbox[1], 1)
+            draw.text(((dim - tw)//2, (dim - th)//2), ch, font=font, fill=255)
+            arr = np.array(img)
+            c_coords = np.argwhere(arr > 90)
             
-            py = round(target_y, 2)
-            
-            # 高度 Z 正常展開 (2.0 ~ 5.8 米)
-            norm_z = (max_r - r) / range_r
-            pz = round(1.8 + norm_z * 4.2, 2)
+            alloc_n = pts_per_c if c_idx < c_count - 1 else (n - len(char_coords_list))
+            if len(c_coords) == 0:
+                c_coords = np.zeros((alloc_n, 2))
 
-            # 顏色與漸層
-            if has_gradient:
-                # 由上往下由淺入深：上方 (r 小) 較淺，下方 (r 大) 較深
-                ratio = (r - min_r) / range_r
-                tint = (1.0 - ratio) * 0.75 # 頂部白光偏置
-                cur_r = int(base_rgb[0] + (255 - base_rgb[0]) * tint)
-                cur_g = int(base_rgb[1] + (255 - base_rgb[1]) * tint)
-                cur_b = int(base_rgb[2] + (255 - base_rgb[2]) * tint)
-                pt_color = hex_from_rgb((cur_r, cur_g, cur_b))
+            if len(c_coords) >= alloc_n:
+                sampled = c_coords[np.linspace(0, len(c_coords)-1, alloc_n, dtype=int)]
             else:
-                pt_color = hex_from_rgb(base_rgb)
+                rep = (alloc_n // len(c_coords)) + 1
+                sampled = np.tile(c_coords, (rep, 1))[:alloc_n]
 
-            all_points.append({"x": px, "y": py, "z": pz, "color": pt_color})
+            # 局部正規化至 [-1.5, 1.5]
+            slot_offset_x = (-4.0 + (c_idx + 0.5) * (8.0 / c_count)) if c_count > 1 else 0.0
+            min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
+            min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
+            norm_x = (sampled[:, 1] - min_c) / max(max_c - min_c, 1) * (6.5 / c_count) - (3.25 / c_count) + slot_offset_x
+            norm_z = (max_r - sampled[:, 0]) / max(max_r - min_r, 1) * 3.5 - 1.75
+            norm_y = np.zeros(alloc_n)
+            char_coords_list.extend(np.column_stack([norm_x, norm_y, norm_z]))
 
-    # 若為英文 HAPPY，套用五彩光
-    if "HAPPY" in text.upper():
-        rainbow = ["#FF3366", "#FF9900", "#FFD700", "#33CC33", "#00F0FF", "#9933FF"]
-        for p in all_points:
-            norm_x = (p["x"] + 5.0) / 10.0
-            c_idx = int(norm_x * len(rainbow))
-            p["color"] = rainbow[min(c_idx, len(rainbow) - 1)]
+        return np.array(char_coords_list)
 
-    return all_points
+    else:
+        # 預設圓形環
+        t = np.linspace(0, 2 * math.pi, n)
+        x = 3.2 * np.cos(t)
+        z = 3.2 * np.sin(t)
+        y = np.zeros(n)
+        return np.column_stack([x, y, z])
 
-# ----------------- 圖片轉點陣雙核心引擎 -----------------
+# ----------------- 圖元渲染整合核心 -----------------
+def render_directive_to_points(directive: SceneDirective, total_drones: int):
+    elements = directive.elements
+    if not elements:
+        elements = [PrimitiveElement(shape_type="text", text=directive.scene_name, ratio=1.0)]
+
+    # 計算各圖元分配架數
+    total_ratio = sum(max(0.1, el.ratio) for el in elements)
+    allocated_counts = []
+    accum = 0
+    for idx, el in enumerate(elements):
+        if idx == len(elements) - 1:
+            cnt = total_drones - accum
+        else:
+            cnt = int(total_drones * (el.ratio / total_ratio))
+            accum += cnt
+        allocated_counts.append(cnt)
+
+    scene_points = []
+    for el, count in zip(elements, allocated_counts):
+        if count <= 0:
+            continue
+        base_coords = generate_primitive_coords(el.shape_type, count, el.text)
+        transformed = apply_transforms(base_coords, el.center, el.scale, el.rotate_deg)
+
+        # 計算色彩漸層
+        colors = el.colors or ["#00F0FF"]
+        grad_dir = el.gradient_direction or "none"
+        
+        # 取得維度極值做比例計算
+        min_x, max_x = np.min(transformed[:, 0]), np.max(transformed[:, 0])
+        min_y, max_y = np.min(transformed[:, 1]), np.max(transformed[:, 1])
+        min_z, max_z = np.min(transformed[:, 2]), np.max(transformed[:, 2])
+
+        for pt in transformed:
+            px, py, pz = round(float(pt[0]), 2), round(float(pt[1]), 2), round(float(pt[2]), 2)
+            
+            # 計算該點在漸層向量中的比例 (0.0 ~ 1.0)
+            if grad_dir == "z_axis_up":
+                ratio = (pz - min_z) / max(max_z - min_z, 0.01)
+            elif grad_dir == "z_axis_down":
+                ratio = (max_z - pz) / max(max_z - min_z, 0.01)
+            elif grad_dir == "x_axis":
+                ratio = (px - min_x) / max(max_x - min_x, 0.01)
+            elif grad_dir == "y_axis":
+                ratio = (py - min_y) / max(max_y - min_y, 0.01)
+            elif grad_dir == "radial":
+                dist = math.sqrt((px - el.center[0])**2 + (pz - el.center[2])**2)
+                ratio = dist / 4.0
+            else:
+                ratio = 0.0
+
+            color_hex = interpolate_colors(colors, ratio)
+            scene_points.append({"x": px, "y": py, "z": pz, "color": color_hex})
+
+    return scene_points
+
+# ----------------- 圖片轉點陣 -----------------
 def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
     img = binary_image.copy()
     prev = np.zeros_like(img)
@@ -320,7 +346,6 @@ def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
 def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel"):
     pil_img = Image.open(io.BytesIO(image_bytes))
     rgba_img = pil_img.convert("RGBA")
-    
     grid_dim = 90
     w, h = rgba_img.size
     scale = grid_dim / max(w, h)
@@ -328,96 +353,81 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
     resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
     img_arr = np.array(resized)
 
-    r_chan = img_arr[:, :, 0]
-    g_chan = img_arr[:, :, 1]
-    b_chan = img_arr[:, :, 2]
-    alpha = img_arr[:, :, 3]
-
+    r_chan, g_chan, b_chan, alpha = img_arr[:, :, 0], img_arr[:, :, 1], img_arr[:, :, 2], img_arr[:, :, 3]
     is_bg = (alpha < 80) | ((r_chan > 232) & (g_chan > 232) & (b_chan > 232))
     subject_coords = np.argwhere(~is_bg)
-
     if len(subject_coords) < 50:
         subject_coords = np.argwhere(alpha > 0)
 
     if mode == "pixel":
         if len(subject_coords) >= total_n:
-            indices = np.linspace(0, len(subject_coords) - 1, total_n, dtype=int)
-            sampled = subject_coords[indices]
+            sampled = subject_coords[np.linspace(0, len(subject_coords) - 1, total_n, dtype=int)]
         else:
-            rep = (total_n // len(subject_coords)) + 1
-            extended = np.tile(subject_coords, (rep, 1))
-            noise = np.random.uniform(-0.35, 0.35, size=extended.shape)
-            sampled = (extended + noise)[:total_n]
+            sampled = np.tile(subject_coords, ((total_n // len(subject_coords)) + 1, 1))[:total_n]
 
         min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
         min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
-        range_r = max(max_r - min_r, 1)
-        range_c = max(max_c - min_c, 1)
+        range_r, range_c = max(max_r - min_r, 1), max(max_c - min_c, 1)
 
         pts = []
         for r, c in sampled:
-            norm_x = (c - min_c) / range_c
-            norm_z = (max_r - r) / range_r
-
+            norm_x, norm_z = (c - min_c) / range_c, (max_r - r) / range_r
             px = round(-4.5 + norm_x * 9.0, 2)
             py = 4.0
             pz = round(1.8 + norm_z * 4.5, 2)
-
-            r_idx = min(max(int(r), 0), new_h - 1)
-            c_idx = min(max(int(c), 0), new_w - 1)
-            r_val, g_val, b_val, _ = img_arr[r_idx, c_idx]
-
-            if r_val < 30 and g_val < 30 and b_val < 30:
-                hex_color = "#1E293B"
-            else:
-                hex_color = f"#{r_val:02X}{g_val:02X}{b_val:02X}"
-
+            r_val, g_val, b_val, _ = img_arr[int(r), int(c)]
+            hex_color = "#1E293B" if (r_val < 30 and g_val < 30 and b_val < 30) else f"#{r_val:02X}{g_val:02X}{b_val:02X}"
             pts.append({"x": px, "y": py, "z": pz, "color": hex_color})
         return pts
     else:
         binary = (~is_bg).astype(np.uint8)
         skeleton = zhang_suen_thinning(binary)
         coords = np.argwhere(skeleton == 1)
-        if len(coords) < 30:
-            coords = subject_coords
-
+        if len(coords) < 30: coords = subject_coords
         if len(coords) >= total_n:
-            indices = np.linspace(0, len(coords) - 1, total_n, dtype=int)
-            sampled = coords[indices]
+            sampled = coords[np.linspace(0, len(coords) - 1, total_n, dtype=int)]
         else:
-            rep = (total_n // len(coords)) + 1
-            sampled = np.tile(coords, (rep, 1))[:total_n]
+            sampled = np.tile(coords, ((total_n // len(coords)) + 1, 1))[:total_n]
 
         min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
         min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
-        range_r = max(max_r - min_r, 1)
-        range_c = max(max_c - min_c, 1)
+        range_r, range_c = max(max_r - min_r, 1), max(max_c - min_c, 1)
 
         pts = []
         for r, c in sampled:
-            norm_x = (c - min_c) / range_c
-            norm_z = (max_r - r) / range_r
-            px = round(-4.5 + norm_x * 9.0, 2)
+            px = round(-4.5 + ((c - min_c) / range_c) * 9.0, 2)
             py = 4.0
-            pz = round(1.8 + norm_z * 4.5, 2)
+            pz = round(1.8 + ((max_r - r) / range_r) * 4.5, 2)
             pts.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
         return pts
 
-def extract_target_text(line_text: str):
-    quote_match = re.search(r'[「『"“\']([^「『"”\']+)[\」』"”\']', line_text)
-    if quote_match:
-        return quote_match.group(1).strip()
-    eng_match = re.search(r'\b([A-Z]{2,8})\b', line_text.upper())
-    if eng_match:
-        token = eng_match.group(1).strip()
-        if token not in ["GROUND", "TAKEOFF", "START"]:
-            return token
-    word_match = re.search(r'(?:排成|文字|排字|字樣)\D*?([\u4e00-\u9fa5]{1,4})', line_text)
-    if word_match:
-        candidate = word_match.group(1)
-        if candidate not in ["地面", "起飛", "隊形", "陣列", "幾何"]:
-            return candidate
-    return None
+# ----------------- 自由創作總導演 SYSTEM PROMPT -----------------
+CREATIVE_DIRECTOR_PROMPT = """你是一位完全解鎖想像力的 3D 無人機大秀編導兼圖學專家。
+閱讀使用者的演出劇本，將每一幕拆解為多個三維幾何圖元 (elements) 及其變形與色彩，絕不輸出具體點座標。
+
+可用圖元 (shape_type):
+- ground_grid: 地面停機坪 (僅用於起飛/第一幕)
+- text: 中英文字/字母 (填寫 text 欄位，如 '富邦'、'SLHS')
+- heart: 3D 心形
+- ring: 圓環、光環、土星環
+- spiral: 螺旋、龍捲風
+- sphere: 立體球體、星體
+- star: 立體五角星
+
+自由變形與色彩屬性:
+1. ratio: 該圖元佔用無人機總數的比重 (例如主要文字占 0.6，周圍環繞光環占 0.4)
+2. center: 三維中心點 [x, y, z]。X 範圍 [-5.0, 5.0], Y 深度 [2.0, 6.0] (2.4最前, 4.0中間, 5.2後排), Z 高度 [1.5, 6.5]
+3. scale: [sx, sy, sz] 尺寸縮放
+4. rotate_deg: [rx, ry, rz] 任意旋轉傾斜角 (例如傾斜 30 度: [30, 0, 0])
+5. colors: 任意色彩陣列 (支援多色漸層，如 ['#FFFFFF', '#A020F0'] 或虹彩)
+6. gradient_direction: 漸層方向 (z_axis_up, z_axis_down, x_axis, y_axis, radial, none)
+
+範例情境處理能力:
+- 若描述：「富邦，一前一後，富為藍色，邦為紫色由上往下由淺入深」：
+  拆為兩個 text 圖元，富在 center=[ -1.8, 2.5, 3.8 ], colors=['#008CFF']；邦在 center=[ 1.8, 5.2, 3.8 ], colors=['#FFFFFF', '#A020F0'], gradient_direction='z_axis_down'。
+- 若描述：「斜躺的粉紅心形，外圍被金色光環圍繞」：
+  圖元1 heart (ratio 0.6, colors=['#FF69B4'], rotate_deg=[35, 0, 0])；圖元2 ring (ratio 0.4, colors=['#FFD700'], rotate_deg=[35, 0, 0])。
+"""
 
 @app.post("/api/convert-image-to-drone")
 async def convert_image_endpoint(req: ImageSceneRequest):
@@ -439,29 +449,48 @@ async def convert_image_endpoint(req: ImageSceneRequest):
 
 @app.post("/api/generate-show")
 async def generate_show(req: ShowRequest):
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="GEMINI_API_KEY 未設定")
+
     async with request_lock:
-        prompt_lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
-        scenes = []
-        for idx, line in enumerate(prompt_lines):
-            scene_name = line
-            if idx == 0 or "起飛" in line or "地面" in line:
-                pts = generate_ground_takeoff_points(req.drone_count)
-                scenes.append({"name": "第 1 幕：地面起飛停機坪", "points": pts})
-                continue
+        print(f"[{req.student_name}] 正在呼叫奔放導演思考中...")
+        user_content = f"演出架數: {req.drone_count}\n劇本需求:\n{req.prompt}"
 
-            target_text = extract_target_text(line)
-            if target_text:
-                pts = render_advanced_text_to_points(target_text, req.drone_count, prompt_line=line)
-                if pts:
-                    scenes.append({"name": scene_name, "points": pts})
-                    continue
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            def call_creative_director():
+                return client.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=user_content,
+                    config=types.GenerateContentConfig(
+                        system_instruction=CREATIVE_DIRECTOR_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=DirectorScript,
+                        temperature=0.2
+                    )
+                )
 
-            default_pts = []
-            for i in range(req.drone_count):
-                angle = (i / req.drone_count) * 2 * math.pi
-                px = round(3.5 * math.cos(angle), 2)
-                pz = round(3.8 + 2.0 * math.sin(angle), 2)
-                default_pts.append({"x": px, "y": 4.0, "z": pz, "color": "#38bdf8"})
-            scenes.append({"name": scene_name, "points": default_pts})
+            ai_resp = await asyncio.wait_for(asyncio.to_thread(call_creative_director), timeout=35.0)
+            director_data = json.loads(ai_resp.text.strip())
+            directives = director_data.get("scenes", [])
+            print(f"[{req.student_name}] AI 導演成功建構 {len(directives)} 組複合幾何劇幕！")
 
-        return {"status": "success", "data": json.dumps({"scenes": scenes})}
+        except Exception as e:
+            print(f"AI 導演解析異常: {str(e)}，啟動幾何備援機制...")
+            lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
+            directives = []
+            for idx, l in enumerate(lines):
+                if idx == 0 or "起飛" in l:
+                    directives.append(SceneDirective(scene_name=l, elements=[PrimitiveElement(shape_type="ground_grid")]))
+                else:
+                    directives.append(SceneDirective(scene_name=l, elements=[PrimitiveElement(shape_type="text", text=l)]))
+
+        # 幾何工匠：0.05 秒秒算滿編無人機空間點位
+        rendered_scenes = []
+        for d in directives:
+            directive_obj = SceneDirective(**d) if isinstance(d, dict) else d
+            pts = render_directive_to_points(directive_obj, req.drone_count)
+            rendered_scenes.append({"name": directive_obj.scene_name, "points": pts})
+
+        print(f"[{req.student_name}] 全場幾何渲染完成，共 {len(rendered_scenes)} 幕！")
+        return {"status": "success", "data": json.dumps({"scenes": rendered_scenes})}
