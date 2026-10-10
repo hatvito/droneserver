@@ -59,14 +59,13 @@ class Scene(BaseModel):
 
 request_lock = asyncio.Lock()
 
-# ----------------- 顏色庫 -----------------
 COLOR_MAP = {
     "藍": (0, 140, 255),
     "深藍": (0, 60, 180),
     "淺藍": (135, 206, 250),
-    "紫": (160, 32, 240),
-    "深紫": (80, 0, 130),
-    "淺紫": (221, 160, 221),
+    "紫": (170, 40, 250),
+    "深紫": (90, 0, 140),
+    "淺紫": (225, 160, 230),
     "紅": (255, 40, 40),
     "粉": (255, 105, 180),
     "黃": (255, 215, 0),
@@ -77,19 +76,10 @@ COLOR_MAP = {
     "青": (0, 240, 255)
 }
 
-DEPTH_KEYWORDS = {
-    "最前": 2.2,
-    "前": 3.0,
-    "中": 4.0,
-    "後": 5.0,
-    "最後": 5.8
-}
-
 def hex_from_rgb(rgb_tuple):
     r, g, b = [max(0, min(255, int(v))) for v in rgb_tuple]
     return f"#{r:02X}{g:02X}{b:02X}"
 
-# ----------------- 地面停機坪網格 -----------------
 def generate_ground_takeoff_points(total_n: int):
     cols = math.ceil(math.sqrt(total_n * 1.5))
     rows = math.ceil(total_n / cols)
@@ -107,67 +97,55 @@ def generate_ground_takeoff_points(total_n: int):
         pts.append({"x": px, "y": py, "z": 0.0, "color": "#FFFFFF"})
     return pts
 
-# ----------------- 語意位置與色彩解析引擎 -----------------
-def parse_char_rules(chars: list, prompt_line: str):
-    """
-    針對每個字元解析專屬的深度 (Y 軸) 與色彩/漸層設定
-    支援語意如：四個字母為紫色漸層，且位置為最前、前、中、後
-    """
-    rules = []
+# ----------------- 深度與漸層語意解析核心 -----------------
+def parse_multi_char_layout(chars: list, prompt_line: str):
     num_chars = len(chars)
+    rules = []
 
-    # 1. 深度解析 (最前、前、中、後)
-    depth_match = re.search(r'(?:位置[為是：:\s]*|分佈[為是：:\s]*)([^，,。]+)', prompt_line)
+    # 1. 深度解析
     assigned_depths = [4.0] * num_chars
+    
+    # 支援自然語言：「一前一後」、「前後」
+    if "一前一後" in prompt_line or "前、後" in prompt_line or "前後" in prompt_line:
+        if num_chars == 2:
+            assigned_depths = [2.6, 5.2] # 前者在 Y=2.6, 後者在 Y=5.2
+        else:
+            assigned_depths = np.linspace(2.5, 5.5, num_chars).tolist()
+    elif "最前" in prompt_line or "中" in prompt_line:
+        depth_order = []
+        for word, val in [("最前", 2.2), ("前", 3.0), ("中", 4.0), ("後", 5.0), ("最後", 5.8)]:
+            if word in prompt_line:
+                depth_order.append(val)
+        if len(depth_order) >= num_chars:
+            assigned_depths = depth_order[:num_chars]
+        else:
+            assigned_depths = np.linspace(2.5, 5.5, num_chars).tolist()
 
-    if depth_match:
-        depth_str = depth_match.group(1)
-        # 尋找所有深度詞彙
-        found_depths = []
-        # 按長度降序匹配，防止「最前」被切成「最」+「前」
-        sorted_keys = sorted(DEPTH_KEYWORDS.keys(), key=lambda k: -len(k))
-        tokens = re.split(r'[,，、\s]+', depth_str)
-        for tok in tokens:
-            for k in sorted_keys:
-                if k in tok:
-                    found_depths.append(DEPTH_KEYWORDS[k])
-                    break
-        
-        if len(found_depths) >= num_chars:
-            assigned_depths = found_depths[:num_chars]
-        elif found_depths:
-            # 等距補齊
-            assigned_depths = [found_depths[i % len(found_depths)] for i in range(num_chars)]
-
-    # 2. 色彩與漸層解析
+    # 2. 顏色與漸層解析
     has_global_gradient = "漸層" in prompt_line
-    # 搜尋主要顏色關鍵字
-    base_color_rgb = (160, 32, 240) if "紫" in prompt_line else (0, 140, 255) # 預設紫或藍
-    for color_name, rgb in COLOR_MAP.items():
-        if color_name in prompt_line:
-            base_color_rgb = rgb
-            break
+    default_base_rgb = (0, 240, 255) # 預設科技藍
 
-    for idx, ch in enumerate(chars):
-        char_rule = {
-            "y": assigned_depths[idx],
-            "base_rgb": base_color_rgb,
-            "has_gradient": has_global_gradient,
-            "char_ratio": idx / max(num_chars - 1, 1) # 橫向/序號比率 (0.0 ~ 1.0)
-        }
+    for c_idx, ch in enumerate(chars):
+        char_rgb = default_base_rgb
+        char_grad = has_global_gradient
 
-        # 檢查該字是否有個別顏色覆蓋 (例如「富字為藍色」)
-        char_specific = re.search(rf"{ch}[字為是]*([^，,。]+)", prompt_line)
-        if char_specific:
-            spec_text = char_specific.group(1)
-            for c_name, c_rgb in COLOR_MAP.items():
-                if c_name in spec_text:
-                    char_rule["base_rgb"] = c_rgb
-                    break
-            if "漸層" in spec_text:
-                char_rule["has_gradient"] = True
+        # 針對個別文字尋找顏色子句 (例如：富字為藍色、邦字紫色有漸層)
+        char_match = re.search(rf"{ch}[字為是色\s]*([^，,。]+)", prompt_line)
+        clause = char_match.group(1) if char_match else prompt_line
 
-        rules.append(char_rule)
+        for c_name, rgb in COLOR_MAP.items():
+            if c_name in clause:
+                char_rgb = rgb
+                break
+
+        if "漸層" in clause or ("淺" in clause and "深" in clause):
+            char_grad = True
+
+        rules.append({
+            "y": assigned_depths[c_idx],
+            "base_rgb": char_rgb,
+            "has_gradient": char_grad
+        })
 
     return rules
 
@@ -178,70 +156,88 @@ def render_advanced_text_to_points(text: str, total_n: int, prompt_line: str):
     chars = list(text)
     num_chars = len(chars)
     drones_per_char = total_n // num_chars
+    rules = parse_multi_char_layout(chars, prompt_line)
 
-    char_rules = parse_char_rules(chars, prompt_line)
     all_points = []
     
-    total_span_x = 10.0
-    slot_width = total_span_x / num_chars
+    # 決定字在舞台橫向的跨度 (X 軸)
+    # 如果是一前一後，字可以稍微重疊錯開或左右擺放
+    is_front_back = any(abs(rules[i]["y"] - rules[0]["y"]) > 1.0 for i in range(1, num_chars))
+    
+    total_w = 9.6
+    slot_w = total_w / num_chars if not is_front_back else (total_w * 0.7)
 
     for c_idx, char in enumerate(chars):
-        rule = char_rules[c_idx]
-        base_rgb = rule["base_rgb"]
+        rule = rules[c_idx]
         target_y = rule["y"]
+        base_rgb = rule["base_rgb"]
         has_gradient = rule["has_gradient"]
 
-        canvas_dim = 120
-        img = Image.new("L", (canvas_dim, canvas_dim), color=0)
+        # 每個字單獨建立高解析單字畫布
+        canvas_w = 120
+        canvas_h = 120
+        img = Image.new("L", (canvas_w, canvas_h), color=0)
         draw = ImageDraw.Draw(img)
 
         try:
-            font = ImageFont.truetype(FONT_PATH, 92)
+            font = ImageFont.truetype(FONT_PATH, 96)
         except Exception:
             font = ImageFont.load_default()
 
         bbox = draw.textbbox((0, 0), char, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        draw_x = max(0, (canvas_dim - text_w) // 2)
-        draw_y = max(0, (canvas_dim - text_h) // 2)
-        draw.text((draw_x, draw_y), char, font=font, fill=255)
+        tw = max(bbox[2] - bbox[0], 1)
+        th = max(bbox[3] - bbox[1], 1)
+        draw.text(((canvas_w - tw) // 2, (canvas_h - th) // 2), char, font=font, fill=255)
 
         img_arr = np.array(img)
-        stroke_coords = np.argwhere(img_arr > 100)
+        coords = np.argwhere(img_arr > 90) # [row, col] -> [y, x]
 
-        if len(stroke_coords) == 0:
+        if len(coords) == 0:
             continue
 
-        target_char_drones = drones_per_char if c_idx < num_chars - 1 else (total_n - len(all_points))
+        target_char_count = drones_per_char if c_idx < num_chars - 1 else (total_n - len(all_points))
 
-        if len(stroke_coords) >= target_char_drones:
-            indices = np.linspace(0, len(stroke_coords) - 1, target_char_drones, dtype=int)
-            sampled = stroke_coords[indices]
+        # 抽樣無人機
+        if len(coords) >= target_char_count:
+            indices = np.linspace(0, len(coords) - 1, target_char_count, dtype=int)
+            sampled = coords[indices]
         else:
-            rep = (target_char_drones // len(stroke_coords)) + 1
-            extended = np.tile(stroke_coords, (rep, 1))
+            rep = (target_char_count // len(coords)) + 1
+            extended = np.tile(coords, (rep, 1))
             noise = np.random.uniform(-0.35, 0.35, size=extended.shape)
-            sampled = (extended + noise)[:target_char_drones]
+            sampled = (extended + noise)[:target_char_count]
 
-        char_start_x = -5.0 + c_idx * slot_width
+        # 計算字的橫向 X 基準點
+        if is_front_back:
+            # 一前一後：前面偏左一點點(-1.5)，後面偏右一點點(+1.5)，具備最佳 3D 透視感
+            char_center_x = -1.8 if c_idx == 0 else 1.8
+            char_width_span = 4.2
+        else:
+            # 正常並排排開
+            char_center_x = -4.5 + (c_idx + 0.5) * (9.0 / num_chars)
+            char_width_span = (8.0 / num_chars) * 0.85
+
         min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
+        min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
         range_r = max(max_r - min_r, 1)
+        range_c = max(max_c - min_c, 1)
 
         for r, c in sampled:
-            norm_c = c / canvas_dim
-            px = round(char_start_x + norm_c * slot_width, 2)
-            py = round(target_y, 2)  # 使用解析到的深度 (最前、前、中、後)
+            # 確保 X 有充裕寬度，絕對不會被壓成一條直線！
+            norm_x = (c - min_c) / range_c
+            px = round((char_center_x - char_width_span / 2) + norm_x * char_width_span, 2)
             
-            norm_h = (canvas_dim - r) / canvas_dim
-            pz = round(1.8 + norm_h * 4.2, 2)
+            py = round(target_y, 2)
+            
+            # 高度 Z 正常展開 (2.0 ~ 5.8 米)
+            norm_z = (max_r - r) / range_r
+            pz = round(1.8 + norm_z * 4.2, 2)
 
-            # 色彩處理
+            # 顏色與漸層
             if has_gradient:
-                # 若說明中提到「由上往下」或預設：垂直由淺入深
-                # vertical_ratio: 0.0 (最頂部) -> 1.0 (最底部)
-                vertical_ratio = (r - min_r) / range_r
-                tint = (1.0 - vertical_ratio) * 0.70
+                # 由上往下由淺入深：上方 (r 小) 較淺，下方 (r 大) 較深
+                ratio = (r - min_r) / range_r
+                tint = (1.0 - ratio) * 0.75 # 頂部白光偏置
                 cur_r = int(base_rgb[0] + (255 - base_rgb[0]) * tint)
                 cur_g = int(base_rgb[1] + (255 - base_rgb[1]) * tint)
                 cur_b = int(base_rgb[2] + (255 - base_rgb[2]) * tint)
@@ -250,6 +246,14 @@ def render_advanced_text_to_points(text: str, total_n: int, prompt_line: str):
                 pt_color = hex_from_rgb(base_rgb)
 
             all_points.append({"x": px, "y": py, "z": pz, "color": pt_color})
+
+    # 若為英文 HAPPY，套用五彩光
+    if "HAPPY" in text.upper():
+        rainbow = ["#FF3366", "#FF9900", "#FFD700", "#33CC33", "#00F0FF", "#9933FF"]
+        for p in all_points:
+            norm_x = (p["x"] + 5.0) / 10.0
+            c_idx = int(norm_x * len(rainbow))
+            p["color"] = rainbow[min(c_idx, len(rainbow) - 1)]
 
     return all_points
 
@@ -415,7 +419,6 @@ def extract_target_text(line_text: str):
             return candidate
     return None
 
-# ----------------- API 端點 -----------------
 @app.post("/api/convert-image-to-drone")
 async def convert_image_endpoint(req: ImageSceneRequest):
     try:
@@ -448,7 +451,6 @@ async def generate_show(req: ShowRequest):
 
             target_text = extract_target_text(line)
             if target_text:
-                # 傳入整行 prompt_line 進行深度 (Y) 與顏色漸層解析
                 pts = render_advanced_text_to_points(target_text, req.drone_count, prompt_line=line)
                 if pts:
                     scenes.append({"name": scene_name, "points": pts})
