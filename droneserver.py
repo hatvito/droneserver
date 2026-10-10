@@ -12,8 +12,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-from google import genai
-from google.genai import types
 
 app = FastAPI(title="Drone Show AI Proxy Server")
 
@@ -64,6 +62,7 @@ class DroneShowOutput(BaseModel):
 
 request_lock = asyncio.Lock()
 
+# ----------------- 地面停機坪網格 -----------------
 def generate_ground_takeoff_points(total_n: int):
     cols = math.ceil(math.sqrt(total_n * 1.5))
     rows = math.ceil(total_n / cols)
@@ -81,6 +80,7 @@ def generate_ground_takeoff_points(total_n: int):
         pts.append({"x": px, "y": py, "z": 0.0, "color": "#FFFFFF"})
     return pts
 
+# ----------------- 字型點陣轉換 -----------------
 def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
     if not text.strip():
         return None
@@ -205,12 +205,11 @@ def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
         prev = img.copy()
     return img
 
-# ----------------- 智慧實體點陣提取引擎 (100% 聚焦主體) -----------------
+# ----------------- 圖片轉點陣雙核心引擎 -----------------
 def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel"):
     pil_img = Image.open(io.BytesIO(image_bytes))
     rgba_img = pil_img.convert("RGBA")
     
-    # 稍微放大工作畫布保持五官細節 (例如 80x80)
     grid_dim = 90
     w, h = rgba_img.size
     scale = grid_dim / max(w, h)
@@ -218,24 +217,20 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
     resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
     img_arr = np.array(resized)
 
-    # 1. 智慧背景檢測（透明度 < 80 或是 純白/近白底 R>235, G>235, B>235）
     r_chan = img_arr[:, :, 0]
     g_chan = img_arr[:, :, 1]
     b_chan = img_arr[:, :, 2]
     alpha = img_arr[:, :, 3]
 
+    # 去背或過濾接近純白背景
     is_bg = (alpha < 80) | ((r_chan > 232) & (g_chan > 232) & (b_chan > 232))
-    
-    # 抓出「非背景」的實體像素點（柴犬身體、五官、項圈）
     subject_coords = np.argwhere(~is_bg)
 
-    # 若圖片整張都很暗或沒有白底，退回全圖
     if len(subject_coords) < 50:
         subject_coords = np.argwhere(alpha > 0)
 
-    # ======= 模式 1：實心彩色主體像素 (700 架全部分配給柴犬) =======
+    # 模式 1：彩色主體像素
     if mode == "pixel":
-        # 均勻抽樣剛好 total_n 架
         if len(subject_coords) >= total_n:
             indices = np.linspace(0, len(subject_coords) - 1, total_n, dtype=int)
             sampled = subject_coords[indices]
@@ -245,7 +240,6 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
             noise = np.random.uniform(-0.35, 0.35, size=extended.shape)
             sampled = (extended + noise)[:total_n]
 
-        # 計算柴犬主體邊界，居中放大到全舞台
         min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
         min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
         range_r = max(max_r - min_r, 1)
@@ -260,21 +254,19 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
             py = 4.0
             pz = round(1.8 + norm_z * 4.5, 2)
 
-            # 抓取原圖真實顏色
             r_idx = min(max(int(r), 0), new_h - 1)
             c_idx = min(max(int(c), 0), new_w - 1)
             r_val, g_val, b_val, _ = img_arr[r_idx, c_idx]
-            
-            # 若為黑色眼睛或輪廓線，使用深黑/海軍藍維持夜空對比度
+
             if r_val < 30 and g_val < 30 and b_val < 30:
-                hex_color = "#1E293B" # 科技深邃藍黑
+                hex_color = "#1E293B"
             else:
                 hex_color = f"#{r_val:02X}{g_val:02X}{b_val:02X}"
 
             pts.append({"x": px, "y": py, "z": pz, "color": hex_color})
         return pts
 
-    # ======= 模式 2：骨架線條模式 =======
+    # 模式 2：骨架線條
     else:
         binary = (~is_bg).astype(np.uint8)
         skeleton = zhang_suen_thinning(binary)
@@ -290,3 +282,86 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
             sampled = np.tile(coords, (rep, 1))[:total_n]
 
         min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
+        min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
+        range_r = max(max_r - min_r, 1)
+        range_c = max(max_c - min_c, 1)
+
+        pts = []
+        for r, c in sampled:
+            norm_x = (c - min_c) / range_c
+            norm_z = (max_r - r) / range_r
+            px = round(-4.5 + norm_x * 9.0, 2)
+            py = 4.0
+            pz = round(1.8 + norm_z * 4.5, 2)
+            pts.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
+        return pts
+
+def extract_target_text(line_text: str):
+    quote_match = re.search(r'[「『"“\']([^「『"”\']+)[\」』"”\']', line_text)
+    if quote_match:
+        return quote_match.group(1).strip()
+    eng_match = re.search(r'\b([A-Z]{2,8})\b', line_text.upper())
+    if eng_match:
+        token = eng_match.group(1).strip()
+        if token not in ["GROUND", "TAKEOFF", "START"]:
+            return token
+    word_match = re.search(r'(?:排成|文字|排字|字樣)\D*?([\u4e00-\u9fa5]{1,4})', line_text)
+    if word_match:
+        candidate = word_match.group(1)
+        if candidate not in ["地面", "起飛", "隊形", "陣列", "幾何"]:
+            return candidate
+    return None
+
+# ----------------- API 端點 -----------------
+@app.post("/api/convert-image-to-drone")
+async def convert_image_endpoint(req: ImageSceneRequest):
+    try:
+        header, encoded = req.image_base64.split(",", 1) if "," in req.image_base64 else ("", req.image_base64)
+        image_data = base64.b64decode(encoded)
+        points = image_to_drone_points(image_data, req.drone_count, mode=req.mode or "pixel")
+        if not points:
+            raise HTTPException(status_code=400, detail="無法提取點陣造型")
+        return {
+            "status": "success",
+            "scene": {
+                "name": req.scene_name or "圖片造型",
+                "points": points
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"圖片解析失敗: {str(e)}")
+
+@app.post("/api/generate-show")
+async def generate_show(req: ShowRequest):
+    async with request_lock:
+        prompt_lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
+        scenes = []
+        for idx, line in enumerate(prompt_lines):
+            scene_name = line
+            if idx == 0 or "起飛" in line or "地面" in line:
+                pts = generate_ground_takeoff_points(req.drone_count)
+                scenes.append({"name": "第 1 幕：地面起飛停機坪", "points": pts})
+                continue
+
+            if "龍捲風" in line or "螺旋" in line:
+                pts = generate_tornado_points(req.drone_count)
+                scenes.append({"name": scene_name, "points": pts})
+                continue
+
+            target_text = extract_target_text(line)
+            if target_text:
+                color = "#FFD700" if any("\u4e00" <= c <= "\u9fa5" for c in target_text) else "#00F0FF"
+                pts = render_text_to_points(target_text, req.drone_count, color=color)
+                if pts:
+                    scenes.append({"name": scene_name, "points": pts})
+                    continue
+
+            default_pts = []
+            for i in range(req.drone_count):
+                angle = (i / req.drone_count) * 2 * math.pi
+                px = round(3.5 * math.cos(angle), 2)
+                pz = round(3.8 + 2.0 * math.sin(angle), 2)
+                default_pts.append({"x": px, "y": 4.0, "z": pz, "color": "#38bdf8"})
+            scenes.append({"name": scene_name, "points": default_pts})
+
+        return {"status": "success", "data": json.dumps({"scenes": scenes})}
