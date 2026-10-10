@@ -46,7 +46,8 @@ class ShowRequest(BaseModel):
 class ImageSceneRequest(BaseModel):
     image_base64: str
     drone_count: int
-    scene_name: Optional[str] = "校徽圖形"
+    mode: Optional[str] = "pixel"  # "skeleton" (線條骨架) 或 "pixel" (實心像素)
+    scene_name: Optional[str] = "自訂圖片造型"
 
 class Point3D(BaseModel):
     x: float
@@ -63,10 +64,8 @@ class DroneShowOutput(BaseModel):
 
 request_lock = asyncio.Lock()
 
-# ----------------- 本地精準幾何與點陣引擎 (支援 700+ 架高速計算) -----------------
-
+# ----------------- 地面停機坪網格 -----------------
 def generate_ground_takeoff_points(total_n: int):
-    """地面起飛停機坪矩形網格 (Z=0)"""
     cols = math.ceil(math.sqrt(total_n * 1.5))
     rows = math.ceil(total_n / cols)
     spacing_x = 10.0 / max(cols - 1, 1)
@@ -83,8 +82,8 @@ def generate_ground_takeoff_points(total_n: int):
         pts.append({"x": px, "y": py, "z": 0.0, "color": "#FFFFFF"})
     return pts
 
+# ----------------- 字型點陣轉換 -----------------
 def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
-    """使用字型把中英文轉換為等距飽滿點陣"""
     if not text.strip():
         return None
 
@@ -114,19 +113,16 @@ def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
     if len(stroke_coords) == 0:
         return None
 
-    # 700 架密集取樣
     if len(stroke_coords) >= total_n:
         indices = np.linspace(0, len(stroke_coords) - 1, total_n, dtype=int)
         sampled = stroke_coords[indices]
     else:
         repeat_factor = (total_n // len(stroke_coords)) + 1
         extended = np.tile(stroke_coords, (repeat_factor, 1))
-        # 加上微小抖動擴散讓筆劃更飽滿
         noise = np.random.uniform(-0.4, 0.4, size=extended.shape)
         sampled = (extended + noise)[:total_n]
 
     pts = []
-    # 支援 HAPPY 繽紛五彩配色
     rainbow = ["#FF3366", "#FF9900", "#FFD700", "#33CC33", "#00F0FF", "#9933FF"]
     
     for idx, (r, c) in enumerate(sampled):
@@ -134,7 +130,6 @@ def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
         py = 4.0
         pz = round(1.8 + ((canvas_h - r) / canvas_h) * 4.2, 2)
         
-        # 若是 HAPPY，依照橫向位置給予彩虹色彩
         if "HAPPY" in text.upper():
             c_idx = int((c / canvas_w) * len(rainbow))
             pt_color = rainbow[min(c_idx, len(rainbow) - 1)]
@@ -146,7 +141,6 @@ def render_text_to_points(text: str, total_n: int, color: str = "#00F0FF"):
     return pts
 
 def generate_tornado_points(total_n: int):
-    """龍捲風雙螺旋立體造型"""
     pts = []
     for i in range(total_n):
         t = i / total_n
@@ -158,7 +152,7 @@ def generate_tornado_points(total_n: int):
         pts.append({"x": px, "y": py, "z": round(z, 2), "color": "#00FFFF" if i % 2 == 0 else "#FFD700"})
     return pts
 
-# ----------------- 骨架細化圖片點陣 -----------------
+# ----------------- 骨架細化演算法 (Zhang-Suen) -----------------
 def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
     img = binary_image.copy()
     prev = np.zeros_like(img)
@@ -218,56 +212,113 @@ def zhang_suen_thinning(binary_image: np.ndarray) -> np.ndarray:
         prev = img.copy()
     return img
 
-def image_to_drone_points(image_bytes: bytes, total_n: int):
+# ----------------- 圖片轉點陣雙核心引擎 -----------------
+def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel"):
     pil_img = Image.open(io.BytesIO(image_bytes))
     rgba_img = pil_img.convert("RGBA")
-
-    target_dim = 160
     w, h = rgba_img.size
-    scale = target_dim / max(w, h)
-    new_w, new_h = max(20, int(w * scale)), max(20, int(h * scale))
-    resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+    aspect_ratio = w / h
 
-    alpha = np.array(resized.split()[-1])
-    is_png_transparent = np.any(alpha < 180)
+    # ======= 模式 1：實心像素點陣螢幕模式 (Pixel Display) =======
+    if mode == "pixel":
+        # 計算最符合原圖比例的網格寬高，讓 cols * rows 近似於 total_n
+        cols = max(2, int(math.sqrt(total_n * aspect_ratio)))
+        rows = max(2, int(total_n / cols))
+        
+        # 縮放原圖至該低解析度像素矩陣
+        pixel_img = rgba_img.resize((cols, rows), Image.Resampling.LANCZOS)
+        img_arr = np.array(pixel_img)
+        
+        # 判斷是否為去背透明圖 (Alpha channel)
+        alpha = img_arr[:, :, 3]
+        has_transparency = np.any(alpha < 100)
+        
+        pts = []
+        if has_transparency:
+            # 優先取不透明區域
+            valid_coords = np.argwhere(alpha > 80)
+            if len(valid_coords) < 10:
+                valid_coords = np.argwhere(alpha >= 0)
+            
+            # 均勻抽樣至 total_n
+            if len(valid_coords) >= total_n:
+                indices = np.linspace(0, len(valid_coords) - 1, total_n, dtype=int)
+                sampled = valid_coords[indices]
+            else:
+                rep = (total_n // len(valid_coords)) + 1
+                sampled = np.tile(valid_coords, (rep, 1))[:total_n]
+                
+            for r, c in sampled:
+                px = round(-5.0 + (c / cols) * 10.0, 2)
+                py = 4.0
+                pz = round(1.8 + ((rows - r) / rows) * 4.4, 2)
+                r_c, g_c, b_c, _ = img_arr[r, c]
+                hex_color = f"#{r_c:02X}{g_c:02X}{b_c:02X}"
+                pts.append({"x": px, "y": py, "z": pz, "color": hex_color})
+        else:
+            # 一般彩色實心照片：整面矩形鋪滿
+            count = 0
+            for r in range(rows):
+                for c in range(cols):
+                    if count >= total_n:
+                        break
+                    px = round(-5.0 + (c / cols) * 10.0, 2)
+                    py = 4.0
+                    pz = round(1.8 + ((rows - r) / rows) * 4.4, 2)
+                    r_c, g_c, b_c, _ = img_arr[r, c]
+                    hex_color = f"#{r_c:02X}{g_c:02X}{b_c:02X}"
+                    pts.append({"x": px, "y": py, "z": pz, "color": hex_color})
+                    count += 1
+            
+            # 若尚有剩餘架數補齊最後一行
+            while len(pts) < total_n:
+                pts.append(pts[-1])
+        return pts
 
-    if is_png_transparent:
-        binary = (alpha > 120).astype(np.uint8)
+    # ======= 模式 2：骨架線條模式 (Skeleton Outline) =======
     else:
-        gray = resized.convert("L")
-        arr = np.array(gray)
-        binary = (arr < 160).astype(np.uint8)
-        if np.sum(binary) < 50:
-            binary = (arr > 120).astype(np.uint8)
+        target_dim = 160
+        scale = target_dim / max(w, h)
+        new_w, new_h = max(20, int(w * scale)), max(20, int(h * scale))
+        resized = rgba_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
 
-    skeleton = zhang_suen_thinning(binary)
-    coords = np.argwhere(skeleton == 1)
-    if len(coords) < 30:
-        coords = np.argwhere(binary == 1)
+        alpha = np.array(resized.split()[-1])
+        if np.any(alpha < 180):
+            binary = (alpha > 120).astype(np.uint8)
+        else:
+            gray = resized.convert("L")
+            arr = np.array(gray)
+            binary = (arr < 160).astype(np.uint8)
+            if np.sum(binary) < 50:
+                binary = (arr > 120).astype(np.uint8)
 
-    if len(coords) == 0:
-        return []
+        skeleton = zhang_suen_thinning(binary)
+        coords = np.argwhere(skeleton == 1)
+        if len(coords) < 30:
+            coords = np.argwhere(binary == 1)
 
-    # 均勻抽樣
-    repeat_factor = (total_n // len(coords)) + 1
-    extended = np.tile(coords, (repeat_factor, 1))
-    noise = np.random.uniform(-0.3, 0.3, size=extended.shape)
-    sampled = (extended + noise)[:total_n]
+        if len(coords) == 0:
+            return []
 
-    min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
-    min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
-    range_r = max(max_r - min_r, 1)
-    range_c = max(max_c - min_c, 1)
+        repeat_factor = (total_n // len(coords)) + 1
+        extended = np.tile(coords, (repeat_factor, 1))
+        noise = np.random.uniform(-0.3, 0.3, size=extended.shape)
+        sampled = (extended + noise)[:total_n]
 
-    pts = []
-    for r, c in sampled:
-        norm_x = (c - min_c) / range_c
-        norm_z = (max_r - r) / range_r
-        px = round(-4.8 + norm_x * 9.6, 2)
-        py = 4.0
-        pz = round(1.8 + norm_z * 4.2, 2)
-        pts.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
-    return pts
+        min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
+        min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
+        range_r = max(max_r - min_r, 1)
+        range_c = max(max_c - min_c, 1)
+
+        pts = []
+        for r, c in sampled:
+            norm_x = (c - min_c) / range_c
+            norm_z = (max_r - r) / range_r
+            px = round(-4.8 + norm_x * 9.6, 2)
+            py = 4.0
+            pz = round(1.8 + norm_z * 4.2, 2)
+            pts.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
+        return pts
 
 def extract_target_text(line_text: str):
     quote_match = re.search(r'[「『"“\']([^「『"”\']+)[\」』"”\']', line_text)
@@ -290,42 +341,36 @@ async def convert_image_endpoint(req: ImageSceneRequest):
     try:
         header, encoded = req.image_base64.split(",", 1) if "," in req.image_base64 else ("", req.image_base64)
         image_data = base64.b64decode(encoded)
-        points = image_to_drone_points(image_data, req.drone_count)
+        points = image_to_drone_points(image_data, req.drone_count, mode=req.mode or "pixel")
         if not points:
-            raise HTTPException(status_code=400, detail="無法提取輪廓")
+            raise HTTPException(status_code=400, detail="無法提取點陣造型")
         return {
             "status": "success",
             "scene": {
-                "name": req.scene_name or "校徽造型",
+                "name": req.scene_name or "圖片造型",
                 "points": points
             }
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"圖片解析失敗: {str(e)}")
 
-# ----------------- 秒級生成的群飛總控端點 -----------------
 @app.post("/api/generate-show")
 async def generate_show(req: ShowRequest):
     async with request_lock:
-        print(f"[{req.student_name}] 正在建構 {req.drone_count} 架無人機大秀...")
         prompt_lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
-        
         scenes = []
         for idx, line in enumerate(prompt_lines):
             scene_name = line
-            # 1. 地面起飛
             if idx == 0 or "起飛" in line or "地面" in line:
                 pts = generate_ground_takeoff_points(req.drone_count)
                 scenes.append({"name": "第 1 幕：地面起飛停機坪", "points": pts})
                 continue
 
-            # 2. 龍捲風幾何
             if "龍捲風" in line or "螺旋" in line:
                 pts = generate_tornado_points(req.drone_count)
                 scenes.append({"name": scene_name, "points": pts})
                 continue
 
-            # 3. 中英文排字 (SLHS, 富邦, 士, HAPPY)
             target_text = extract_target_text(line)
             if target_text:
                 color = "#FFD700" if any("\u4e00" <= c <= "\u9fa5" for c in target_text) else "#00F0FF"
@@ -334,7 +379,6 @@ async def generate_show(req: ShowRequest):
                     scenes.append({"name": scene_name, "points": pts})
                     continue
 
-            # 4. 若有其他自訂圖形或未匹配項，使用均勻圓形星空待命
             default_pts = []
             for i in range(req.drone_count):
                 angle = (i / req.drone_count) * 2 * math.pi
@@ -343,5 +387,4 @@ async def generate_show(req: ShowRequest):
                 default_pts.append({"x": px, "y": 4.0, "z": pz, "color": "#38bdf8"})
             scenes.append({"name": scene_name, "points": default_pts})
 
-        print(f"[{req.student_name}] 成功在 0.1 秒內完成 {len(scenes)} 幕、共 {req.drone_count} 架之滿編幾何陣列！")
         return {"status": "success", "data": json.dumps({"scenes": scenes})}
