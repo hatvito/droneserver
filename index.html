@@ -467,9 +467,16 @@
     let lastTimestamp = null;
     let animationFrameId = null;
 
-    // 自動偵測當前主機來源
-    if (window.location.protocol.startsWith("http")) {
-      document.getElementById("serverUrl").value = window.location.origin;
+    // 自動判斷後端伺服器網址
+    const hostname = window.location.hostname;
+    const serverInput = document.getElementById("serverUrl");
+    if (hostname === "localhost" || hostname === "127.0.0.1") {
+      serverInput.value = window.location.origin;
+    } else if (hostname.endsWith("onrender.com")) {
+      serverInput.value = window.location.origin;
+    } else {
+      // 若是在 GitHub Pages (github.io) 或本地檔案 (file://) 開啟，預設連線至 Render 雲端後端
+      serverInput.value = "https://droneserver-69c9.onrender.com";
     }
 
     function switchServer(mode) {
@@ -823,6 +830,12 @@
         return;
       }
 
+      if (serverUrl.includes("github.com") || serverUrl.includes("github.io")) {
+        statusBox.className = "status-msg error";
+        statusBox.innerText = "❌ 伺服器網址不能填寫 GitHub 網址！請點擊右側【雲端】切換至 Render 伺服器。";
+        return;
+      }
+
       const file = fileInput.files[0];
       const pureFileName = file.name.replace(/\.[^/.]+$/, "");
       const modeLabel = imageMode === "pixel" ? "像素彩圖" : "線條骨架";
@@ -896,6 +909,12 @@
 
       if (!prompt) {
         alert("請輸入群飛劇本！");
+        return;
+      }
+
+      if (serverUrl.includes("github.com") || serverUrl.includes("github.io")) {
+        statusBox.className = "status-msg error";
+        statusBox.innerText = "❌ 伺服器網址不能填寫 GitHub 網址！\nGitHub / GitHub Pages 僅提供靜態檔案展示，無法執行 Python 運算後端。\n👉 請點擊網址右側的【雲端】按鈕切換為 Render 雲端後端，或點擊【本機】。";
         return;
       }
 
