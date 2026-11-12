@@ -1,4 +1,13 @@
 import os
+import sys
+
+# 確保 Windows 主控台支援 UTF-8 輸出，避免 UnicodeEncodeError
+if sys.stdout.encoding != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
 import asyncio
 import json
 import traceback
@@ -681,5 +690,5 @@ async def generate_show(req: ShowRequest):
 if __name__ == "__main__":
     import uvicorn
     port = int(os.environ.get("PORT", 8000))
-    print(f"🚀 無人機群飛導演伺服器啟動中: http://localhost:{port}")
+    print(f">> 無人機群飛導演伺服器啟動中: http://localhost:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port)
