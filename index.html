@@ -676,11 +676,16 @@
       animationFrameId = requestAnimationFrame(animationLoop);
     }
 
+    let playTimeoutId = null;
     function pausePlay() {
       isPlaying = false;
       if (animationFrameId) {
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
+      }
+      if (playTimeoutId) {
+        clearTimeout(playTimeoutId);
+        playTimeoutId = null;
       }
       document.getElementById("playBtn").innerText = "▶ 播放大秀";
       document.getElementById("playBtn").classList.remove("active");
@@ -813,10 +818,17 @@
 
         showScenes = showData.scenes;
 
+        // 清理已不在劇本中的圖片暫存
+        for (let imgKey of Object.keys(customImageScenes)) {
+          if (!prompt.includes(imgKey)) {
+            delete customImageScenes[imgKey];
+          }
+        }
+
         for (let scene of showScenes) {
           if (!scene) continue;
           for (let [imgKey, pts] of Object.entries(customImageScenes)) {
-            if (scene.name && (scene.name.includes(imgKey) || imgKey.includes(scene.name))) {
+            if (scene.name && scene.name.includes(imgKey)) {
               scene.points = pts || [];
             }
           }
@@ -837,7 +849,7 @@
         statusBox.innerText = `🎉 生成成功！${droneCount} 架無人機已完成立體防撞航線規劃，即刻播放！`;
 
         renderAtProgress(0.0);
-        setTimeout(startPlay, 400);
+        playTimeoutId = setTimeout(startPlay, 400);
 
       } catch (err) {
         console.error(err);
