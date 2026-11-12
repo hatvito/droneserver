@@ -455,9 +455,6 @@ async def convert_image_endpoint(req: ImageSceneRequest):
 
 @app.post("/api/generate-show")
 async def generate_show(req: ShowRequest):
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="GEMINI_API_KEY 未設定")
-
     async with request_lock:
         print(f"[{req.student_name}] 正在呼叫奔放導演思考中...")
         user_content = f"演出架數: {req.drone_count}\n劇本需求:\n{req.prompt}"
@@ -465,16 +462,26 @@ async def generate_show(req: ShowRequest):
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
             def call_creative_director():
-                return client.models.generate_content(
-                    model="gemini-3.5-flash-lite",
-                    contents=user_content,
-                    config=types.GenerateContentConfig(
-                        system_instruction=CREATIVE_DIRECTOR_PROMPT,
-                        response_mime_type="application/json",
-                        response_schema=DirectorScript,
-                        temperature=0.2
-                    )
-                )
+                candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"]
+                last_ex = None
+                for m in candidate_models:
+                    try:
+                        print(f"[{req.student_name}] 嘗試使用 AI 模型: {m}")
+                        return client.models.generate_content(
+                            model=m,
+                            contents=user_content,
+                            config=types.GenerateContentConfig(
+                                system_instruction=CREATIVE_DIRECTOR_PROMPT,
+                                response_mime_type="application/json",
+                                response_schema=DirectorScript,
+                                temperature=0.2
+                            )
+                        )
+                    except Exception as ex:
+                        print(f"[{req.student_name}] 模型 {m} 異常: {ex}")
+                        last_ex = ex
+                        continue
+                raise last_ex or Exception("所有可用 Gemini 模型皆無法連線")
 
             ai_resp = await asyncio.wait_for(asyncio.to_thread(call_creative_director), timeout=35.0)
             director_data = json.loads(ai_resp.text.strip())
@@ -482,14 +489,64 @@ async def generate_show(req: ShowRequest):
             print(f"[{req.student_name}] AI 導演成功建構 {len(directives)} 組複合幾何劇幕！")
 
         except Exception as e:
-            print(f"AI 導演解析異常: {str(e)}，啟動幾何備援機制...")
+            print(f"AI 導演解析異常: {str(e)}，啟動智慧語義幾何備援機制...")
             lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
             directives = []
-            for idx, l in enumerate(lines):
-                if idx == 0 or "起飛" in l:
-                    directives.append(SceneDirective(scene_name=l, elements=[PrimitiveElement(shape_type="ground_grid")]))
+            for idx, line in enumerate(lines):
+                clean_l = re.sub(r"^第[一二三四五六七八九十\d]+幕[：:]\s*", "", line)
+                quote_match = re.search(r'[\u300c\u300e\u201c\'"]([^\u300d\u300f\u201d\'"]+)[\u300d\u300f\u201d\'"]', clean_l)
+                extracted_text = quote_match.group(1) if quote_match else clean_l
+
+                colors = []
+                if "紅" in clean_l or "赤" in clean_l: colors.append("#FF0055")
+                if "藍" in clean_l or "青" in clean_l: colors.append("#0088FF")
+                if "金" in clean_l or "黃" in clean_l: colors.append("#FFD700")
+                if "綠" in clean_l: colors.append("#00E676")
+                if "紫" in clean_l: colors.append("#A020F0")
+                if "粉" in clean_l: colors.append("#FF69B4")
+                if "白" in clean_l: colors.append("#FFFFFF")
+                if not colors: colors = ["#00F0FF"]
+
+                if idx == 0 or "起飛" in clean_l or "停機" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="ground_grid", ratio=1.0, colors=["#00F0FF"])]
+                    ))
+                elif "心" in clean_l or "愛心" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="heart", ratio=1.0, colors=colors or ["#FF1493", "#FF69B4"])]
+                    ))
+                elif "環" in clean_l or "太陽" in clean_l or "土星" in clean_l or "日" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="ring", ratio=1.0, colors=colors or ["#FFD700", "#FFA500"], rotate_deg=[25, 0, 0])]
+                    ))
+                elif "星" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="star", ratio=1.0, colors=colors or ["#FFD700", "#FFFFFF"])]
+                    ))
+                elif "螺旋" in clean_l or "龍捲風" in clean_l or "蛇" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="spiral", ratio=1.0, colors=colors or ["#00F0FF", "#8A2BE2"], gradient_direction="z_axis_up")]
+                    ))
+                elif "球" in clean_l or "眼" in clean_l or "地球" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="sphere", ratio=1.0, colors=colors or ["#38BDF8", "#1E40AF"], gradient_direction="radial")]
+                    ))
+                elif "波" in clean_l or "海" in clean_l or "浪" in clean_l:
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="wave", ratio=1.0, colors=colors or ["#0077B6", "#00B4D8"])]
+                    ))
                 else:
-                    directives.append(SceneDirective(scene_name=l, elements=[PrimitiveElement(shape_type="text", text=l)]))
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[PrimitiveElement(shape_type="text", text=extracted_text[:8], ratio=1.0, colors=colors)]
+                    ))
 
         # 幾何工匠：0.05 秒秒算滿編無人機空間點位
         rendered_scenes = []
