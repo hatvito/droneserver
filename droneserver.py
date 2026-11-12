@@ -183,23 +183,34 @@ def generate_primitive_coords(shape: str, n: int, text_content: str = ""):
         return np.column_stack([x, y, z])
 
     elif shape == "text" or text_content:
-        # 文字骨架點陣
+        # 文字骨架點陣 (支援多字排版、高解析防裁切、等比例縮放與筆劃加粗)
         chars = list(text_content) if text_content else ["?"]
         c_count = len(chars)
         pts_per_c = n // c_count
         char_coords_list = []
         
+        # 動態計算文字排版橫向總寬度與每字分配槽位
+        span_x = min(8.6, max(2.5, c_count * 2.1))
+        slot_w = span_x / c_count
+        max_h = min(2.8, slot_w * 1.25)
+
         for c_idx, ch in enumerate(chars):
-            dim = 120
+            dim = 200  # 擴大畫布尺寸至 200x200，徹底防止邊緣筆劃被切斷
             img = Image.new("L", (dim, dim), color=0)
             draw = ImageDraw.Draw(img)
             try:
-                font = ImageFont.truetype(FONT_PATH, 92)
+                font = ImageFont.truetype(FONT_PATH, 110)
             except Exception:
                 font = ImageFont.load_default()
+            
             bbox = draw.textbbox((0, 0), ch, font=font)
-            tw, th = max(bbox[2] - bbox[0], 1), max(bbox[3] - bbox[1], 1)
-            draw.text(((dim - tw)//2, (dim - th)//2), ch, font=font, fill=255)
+            tw = max(bbox[2] - bbox[0], 1)
+            th = max(bbox[3] - bbox[1], 1)
+            # 精確補償字型 Bounding Box 偏移量，置中繪製且加粗筆畫以利無人機密集排列
+            offset_x = (dim - tw) // 2 - bbox[0]
+            offset_y = (dim - th) // 2 - bbox[1]
+            draw.text((offset_x, offset_y), ch, font=font, fill=255, stroke_width=2)
+            
             arr = np.array(img)
             c_coords = np.argwhere(arr > 90)
             
@@ -213,13 +224,18 @@ def generate_primitive_coords(shape: str, n: int, text_content: str = ""):
                 rep = (alloc_n // len(c_coords)) + 1
                 sampled = np.tile(c_coords, (rep, 1))[:alloc_n]
 
-            # 局部正規化至 [-1.5, 1.5]
-            slot_offset_x = (-4.0 + (c_idx + 0.5) * (8.0 / c_count)) if c_count > 1 else 0.0
             min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
             min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
-            norm_x = (sampled[:, 1] - min_c) / max(max_c - min_c, 1) * (6.5 / c_count) - (3.25 / c_count) + slot_offset_x
-            norm_z = (max_r - sampled[:, 0]) / max(max_r - min_r, 1) * 3.5 - 1.75
-            norm_y = np.zeros(alloc_n)
+            h = max(max_r - min_r, 1)
+            w = max(max_c - min_c, 1)
+
+            # 嚴格保持文字 1:1 長寬比，避免字體被縱向或橫向過度拉伸
+            scale = min((slot_w * 0.88) / w, max_h / h)
+            slot_center_x = -span_x / 2.0 + (c_idx + 0.5) * slot_w
+
+            norm_x = (sampled[:, 1] - (min_c + max_c) / 2.0) * scale + slot_center_x
+            norm_z = ((min_r + max_r) / 2.0 - sampled[:, 0]) * scale
+            norm_y = np.random.uniform(-0.1, 0.1, alloc_n)
             char_coords_list.extend(np.column_stack([norm_x, norm_y, norm_z]))
 
         return np.array(char_coords_list)
