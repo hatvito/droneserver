@@ -482,7 +482,7 @@
       }
 
       hud.style.display = "flex";
-      const scene = showScenes[sceneIdx];
+      const scene = showScenes[sceneIdx] || showScenes[0] || {};
       title.innerText = `第 ${sceneIdx + 1} 幕：${scene.name || "隊形變換"}`;
       
       if (isArrived) {
@@ -497,15 +497,52 @@
     function renderAtProgress(progress) {
       if (!showScenes || showScenes.length === 0) return;
 
-      const totalTransitions = Math.max(1, showScenes.length - 1);
+      const numScenes = showScenes.length;
+      if (numScenes === 1) {
+        const singleScene = showScenes[0] || {};
+        const pts = singleScene.points || [];
+        const trackedSet = getTrackedDroneSet(pts.length);
+        const curX = [], curY = [], curZ = [], curColors = [], curSizes = [];
+        for (let i = 0; i < pts.length; i++) {
+          const p = pts[i];
+          curX.push(p.x);
+          curY.push(p.y);
+          curZ.push(p.z);
+          const isTracked = (trackedSet === null || trackedSet.has(i));
+          if (trackedSet !== null && isTracked) {
+            curColors.push("#FF0055");
+            curSizes.push(5.5);
+          } else if (trackedSet !== null && !isTracked) {
+            curColors.push("rgba(148, 163, 184, 0.35)");
+            curSizes.push(2.5);
+          } else {
+            curColors.push(p.color || "#38bdf8");
+            curSizes.push(3.5);
+          }
+        }
+        Plotly.restyle("plot-area", { x: [[0]], y: [[4]], z: [[0]] }, [0]);
+        Plotly.restyle("plot-area", {
+          x: [curX], y: [curY], z: [curZ],
+          "marker.color": [curColors],
+          "marker.size": [curSizes]
+        }, [1]);
+        document.getElementById("timelineSlider").value = 0;
+        document.getElementById("curProgressText").innerText = `第 1 幕 (100%)`;
+        updateHUD(0, true);
+        return;
+      }
+
+      const totalTransitions = numScenes - 1;
       const clampedProg = Math.max(0, Math.min(progress, totalTransitions));
 
-      const fromIdx = Math.floor(clampedProg);
-      const toIdx = Math.min(fromIdx + 1, totalTransitions);
+      const fromIdx = Math.min(Math.floor(clampedProg), numScenes - 1);
+      const toIdx = Math.min(fromIdx + 1, numScenes - 1);
       const t = clampedProg - fromIdx;
 
-      const fromPts = showScenes[fromIdx].points || [];
-      const toPts = showScenes[toIdx].points || [];
+      const fromScene = showScenes[fromIdx] || showScenes[0] || {};
+      const toScene = showScenes[toIdx] || fromScene;
+      const fromPts = fromScene.points || [];
+      const toPts = toScene.points || [];
       const droneCount = Math.min(fromPts.length, toPts.length);
 
       const trackedSet = getTrackedDroneSet(droneCount);
@@ -624,6 +661,11 @@
 
     function startPlay() {
       if (!showScenes || showScenes.length === 0) return;
+      if (showScenes.length <= 1) {
+        currentGlobalProgress = 0.0;
+        renderAtProgress(0.0);
+        return;
+      }
       if (currentGlobalProgress >= showScenes.length - 1) {
         currentGlobalProgress = 0.0;
       }
@@ -772,17 +814,20 @@
         showScenes = showData.scenes;
 
         for (let scene of showScenes) {
+          if (!scene) continue;
           for (let [imgKey, pts] of Object.entries(customImageScenes)) {
-            if (scene.name.includes(imgKey) || imgKey.includes(scene.name)) {
-              scene.points = pts;
+            if (scene.name && (scene.name.includes(imgKey) || imgKey.includes(scene.name))) {
+              scene.points = pts || [];
             }
           }
         }
 
         for (let s = 0; s < showScenes.length - 1; s++) {
-          const currentPts = showScenes[s].points;
-          const nextPts = showScenes[s + 1].points;
-          showScenes[s + 1].points = optimizePairings(currentPts, nextPts);
+          const currentPts = showScenes[s]?.points || [];
+          const nextPts = showScenes[s + 1]?.points || [];
+          if (showScenes[s + 1] && currentPts.length > 0 && nextPts.length > 0) {
+            showScenes[s + 1].points = optimizePairings(currentPts, nextPts);
+          }
         }
 
         currentGlobalProgress = 0.0;
