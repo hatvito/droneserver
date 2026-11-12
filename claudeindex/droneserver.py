@@ -124,13 +124,13 @@ def apply_transforms(coords: np.ndarray, center: List[float], scale: List[float]
 # ----------------- 幾何圖元生成器 -----------------
 def generate_primitive_coords(shape: str, n: int, text_content: str = ""):
     if shape == "ground_grid":
-        cols = math.ceil(math.sqrt(n * 1.5))
+        cols = math.ceil(math.sqrt(n * 2.2))
         rows = math.ceil(n / cols)
         pts = []
         for i in range(n):
             r, c = i // cols, i % cols
-            x = -5.0 + (c / max(cols - 1, 1)) * 10.0
-            y = 2.8 + (r / max(rows - 1, 1)) * 2.4
+            x = -5.5 + (c / max(cols - 1, 1)) * 11.0
+            y = 2.4 + (r / max(rows - 1, 1)) * 3.2
             z = 0.0
             pts.append([x, y, z])
         return np.array(pts)
@@ -271,11 +271,15 @@ def render_directive_to_points(directive: SceneDirective, total_drones: int):
         if count <= 0:
             continue
         base_coords = generate_primitive_coords(el.shape_type, count, el.text)
-        transformed = apply_transforms(base_coords, el.center, el.scale, el.rotate_deg)
+        if el.shape_type == "ground_grid":
+            # 地面停機坪：所有無人機嚴格貼緊地面 Z=0，依矩陣整齊排列於起飛跑道
+            transformed = base_coords.copy()
+        else:
+            transformed = apply_transforms(base_coords, el.center, el.scale, el.rotate_deg)
 
         # 計算色彩漸層
-        colors = el.colors or ["#00F0FF"]
-        grad_dir = el.gradient_direction or "none"
+        colors = el.colors or (["#00E676", "#00F0FF"] if el.shape_type == "ground_grid" else ["#00F0FF"])
+        grad_dir = el.gradient_direction or ("y_axis" if el.shape_type == "ground_grid" else "none")
         
         # 取得維度極值做比例計算
         min_x, max_x = np.min(transformed[:, 0]), np.max(transformed[:, 0])
@@ -427,6 +431,10 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
 CREATIVE_DIRECTOR_PROMPT = """你是一位完全解鎖想像力的 3D 無人機大秀編導兼圖學專家。
 閱讀使用者的演出劇本，將每一幕拆解為多個三維幾何圖元 (elements) 及其變形與色彩，絕不輸出具體點座標。
 
+【起飛升空鐵則】：
+無人機燈光秀必須以地面停機坪排列作為第 1 幕（shape_type 為 'ground_grid'，center=[0.0, 4.0, 0.0]，Z 高度固定為 0 貼地待命）。
+若使用者劇本第一幕已是地面起飛/停機坪，將其圖元指定為 ground_grid；若劇本未寫起飛，必須在最前面新增第 1 幕地面停機坪排列 (ground_grid)，再接續空中的精彩造型！
+
 可用圖元 (shape_type):
 - ground_grid: 地面停機坪 (僅用於起飛/第一幕)
 - text: 中英文字/字母 (填寫 text 欄位，如 '富邦'、'SLHS')
@@ -523,10 +531,10 @@ async def generate_show(req: ShowRequest):
                 if "白" in clean_l: colors.append("#FFFFFF")
                 if not colors: colors = ["#00F0FF"]
 
-                if idx == 0 or "起飛" in clean_l or "停機" in clean_l:
+                if "起飛" in clean_l or "停機" in clean_l or "地面" in clean_l:
                     directives.append(SceneDirective(
                         scene_name=line,
-                        elements=[PrimitiveElement(shape_type="ground_grid", ratio=1.0, colors=["#00F0FF"])]
+                        elements=[PrimitiveElement(shape_type="ground_grid", ratio=1.0, colors=["#00E676", "#00F0FF"], gradient_direction="y_axis")]
                     ))
                 elif "心" in clean_l or "愛心" in clean_l:
                     directives.append(SceneDirective(
@@ -563,6 +571,42 @@ async def generate_show(req: ShowRequest):
                         scene_name=line,
                         elements=[PrimitiveElement(shape_type="text", text=extracted_text[:8], ratio=1.0, colors=colors)]
                     ))
+
+        # ---------------- 鐵則：確保開場永遠為地面停機坪起飛排列 ----------------
+        def is_ground_scene(d):
+            name = d.get("scene_name", "") if isinstance(d, dict) else getattr(d, "scene_name", "")
+            elems = d.get("elements", []) if isinstance(d, dict) else getattr(d, "elements", [])
+            if any(k in name for k in ["起飛", "地面", "停機", "跑道", "機坪", "待命", "升空"]):
+                return True
+            for el in elems:
+                st = el.get("shape_type") if isinstance(el, dict) else getattr(el, "shape_type", "")
+                if st == "ground_grid":
+                    return True
+            return False
+
+        if len(directives) == 0 or not is_ground_scene(directives[0]):
+            # 使用者劇本開頭未包含地面起飛，自動於最前方插入「地面停機坪排列（起飛準備）」
+            ground_scene = SceneDirective(
+                scene_name="第一幕：地面停機坪排列（起飛準備）",
+                elements=[PrimitiveElement(
+                    shape_type="ground_grid",
+                    ratio=1.0,
+                    colors=["#00E676", "#00F0FF"],
+                    gradient_direction="y_axis"
+                )]
+            )
+            directives.insert(0, ground_scene)
+        else:
+            # 第一幕已是地面起飛，確保包含 ground_grid 圖元
+            first_d = directives[0]
+            first_elems = first_d.get("elements", []) if isinstance(first_d, dict) else getattr(first_d, "elements", [])
+            has_grid = any((el.get("shape_type") if isinstance(el, dict) else getattr(el, "shape_type", "")) == "ground_grid" for el in first_elems)
+            if not has_grid:
+                grid_el = PrimitiveElement(shape_type="ground_grid", ratio=1.0, colors=["#00E676", "#00F0FF"], gradient_direction="y_axis")
+                if isinstance(first_d, dict):
+                    first_d["elements"] = [grid_el.model_dump()]
+                else:
+                    first_d.elements = [grid_el]
 
         # 幾何工匠：0.05 秒秒算滿編無人機空間點位
         rendered_scenes = []
