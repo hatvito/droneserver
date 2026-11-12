@@ -3,133 +3,68 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>校園無人機群飛 AI 編排教室 2.0</title>
+  <title>校園無人機群飛 AI 編排教室</title>
   <script src="https://cdn.plot.ly/plotly-2.29.0.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    :root {
-      --bg-dark: #090d16;
-      --sidebar-bg: #111827;
-      --card-bg: #1e293b;
-      --border-color: #334155;
-      --primary: #0284c7;
-      --primary-hover: #0369a1;
-      --accent: #38bdf8;
-      --text-main: #f8fafc;
-      --text-muted: #94a3b8;
-      --danger: #ef4444;
-      --success: #22c55e;
-    }
     body {
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Noto Sans TC", Helvetica, Arial, sans-serif;
-      background: var(--bg-dark);
-      color: var(--text-main);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
       height: 100vh;
       display: flex;
       overflow: hidden;
     }
-
-    /* 側邊控制欄 */
     .sidebar {
-      width: 410px;
-      min-width: 410px;
-      background: var(--sidebar-bg);
+      width: 380px;
+      min-width: 380px;
+      background: #1e293b;
       padding: 16px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
-      border-right: 1px solid var(--border-color);
+      gap: 11px;
+      border-right: 1px solid #334155;
       overflow-y: auto;
-      z-index: 10;
-    }
-    .sidebar::-webkit-scrollbar { width: 6px; }
-    .sidebar::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
-
-    .header-box {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px solid var(--border-color);
-      padding-bottom: 10px;
     }
     .sidebar h2 {
       font-size: 1.15rem;
-      color: var(--accent);
+      color: #38bdf8;
       display: flex;
       align-items: center;
       gap: 8px;
     }
-    .badge-v2 {
-      font-size: 0.7rem;
-      background: #0369a1;
-      color: #e0f2fe;
-      padding: 2px 6px;
-      border-radius: 10px;
-      font-weight: bold;
-    }
-
     .form-group {
       display: flex;
       flex-direction: column;
       gap: 5px;
     }
     label {
-      font-size: 0.82rem;
-      color: var(--text-muted);
-      font-weight: 500;
+      font-size: 0.85rem;
+      color: #94a3b8;
     }
     input, textarea, select {
       width: 100%;
       background: #0f172a;
-      border: 1px solid var(--border-color);
-      color: var(--text-main);
-      padding: 7px 10px;
+      border: 1px solid #334155;
+      color: #f8fafc;
+      padding: 8px 10px;
       border-radius: 6px;
-      font-size: 0.85rem;
+      font-size: 0.88rem;
       outline: none;
-      transition: border-color 0.2s, box-shadow 0.2s;
+      transition: border-color 0.2s;
     }
-    input:focus, textarea:focus, select:focus {
-      border-color: var(--accent);
-      box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
-    }
+    input:focus, textarea:focus, select:focus { border-color: #38bdf8; }
     textarea {
       resize: vertical;
-      min-height: 100px;
+      min-height: 110px;
       line-height: 1.45;
       font-family: inherit;
     }
-
-    .row-2 {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-
-    /* 伺服器切換器 */
-    .server-row {
-      display: flex;
-      gap: 6px;
-    }
-    .server-row input { flex: 1; }
-    .btn-pill {
-      background: #1e293b;
-      border: 1px solid var(--border-color);
-      color: var(--accent);
-      font-size: 0.72rem;
-      padding: 0 8px;
-      border-radius: 6px;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .btn-pill:hover { background: #334155; }
-
-    /* 按鈕樣式 */
     button.submit-btn {
-      background: var(--primary);
+      background: #0284c7;
       color: white;
       border: none;
-      padding: 10px;
+      padding: 11px;
       border-radius: 6px;
       font-size: 0.92rem;
       font-weight: 600;
@@ -140,25 +75,12 @@
       gap: 8px;
       transition: background 0.2s;
     }
-    button.submit-btn:hover { background: var(--primary-hover); }
+    button.submit-btn:hover { background: #0369a1; }
     button.submit-btn:disabled {
       background: #475569;
       cursor: not-allowed;
     }
-
-    .btn-secondary {
-      background: #1e293b;
-      color: var(--accent);
-      border: 1px solid var(--border-color);
-      padding: 7px;
-      border-radius: 6px;
-      font-size: 0.82rem;
-      cursor: pointer;
-      font-weight: 600;
-      transition: background 0.2s;
-    }
-    .btn-secondary:hover { background: #334155; }
-
+    
     .image-upload-box {
       border: 1px dashed #475569;
       border-radius: 6px;
@@ -170,50 +92,48 @@
     }
     .image-upload-box input[type="file"] {
       border: none;
-      padding: 2px 0;
+      padding: 3px 0;
       font-size: 0.8rem;
     }
+    .options-row {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .options-row select {
+      flex: 1;
+      padding: 6px 8px;
+      font-size: 0.82rem;
+    }
+    .btn-secondary {
+      background: #334155;
+      color: #38bdf8;
+      border: 1px solid #475569;
+      padding: 7px;
+      border-radius: 4px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    .btn-secondary:hover { background: #475569; }
 
     .status-msg {
-      font-size: 0.84rem;
+      font-size: 0.85rem;
       padding: 8px 12px;
       border-radius: 6px;
       display: none;
       line-height: 1.4;
-      word-break: break-word;
     }
     .status-msg.info { background: #075985; color: #e0f2fe; display: block; }
     .status-msg.error { background: #991b1b; color: #fee2e2; display: block; }
     .status-msg.success { background: #166534; color: #dcfce7; display: block; }
 
-    /* 匯出管理區 */
-    .export-box {
-      display: flex;
-      gap: 8px;
-      margin-top: 4px;
-    }
-    .export-box button {
-      flex: 1;
-      font-size: 0.78rem;
-      padding: 6px;
-      background: #1e293b;
-      color: #94a3b8;
-      border: 1px solid var(--border-color);
-      border-radius: 4px;
-      cursor: pointer;
-    }
-    .export-box button:hover {
-      background: #334155;
-      color: var(--text-main);
-    }
-
-    /* 主要畫布區 */
     .main-content {
       flex: 1;
       display: flex;
       flex-direction: column;
       position: relative;
-      background: var(--bg-dark);
+      background: #090d16;
     }
     #plot-area {
       flex: 1;
@@ -221,15 +141,14 @@
       height: 100%;
     }
 
-    /* HUD 抬頭顯示 */
     .scene-hud {
       position: absolute;
       top: 18px;
       left: 24px;
-      background: rgba(15, 23, 42, 0.88);
+      background: rgba(15, 23, 42, 0.85);
       backdrop-filter: blur(8px);
-      border: 1px solid rgba(56, 189, 248, 0.35);
-      padding: 9px 18px;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      padding: 10px 18px;
       border-radius: 30px;
       display: flex;
       align-items: center;
@@ -243,8 +162,8 @@
       width: 10px;
       height: 10px;
       border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 10px var(--accent);
+      background: #38bdf8;
+      box-shadow: 0 0 10px #38bdf8;
       animation: pulse 1.5s infinite;
     }
     @keyframes pulse {
@@ -260,14 +179,12 @@
     }
     .scene-hud .hud-badge {
       font-size: 0.75rem;
-      background: var(--primary);
+      background: #0284c7;
       color: #fff;
       padding: 2px 8px;
       border-radius: 12px;
-      font-weight: 500;
     }
 
-    /* 底部時間軸工具列 */
     .timeline-bar {
       position: absolute;
       bottom: 0;
@@ -275,17 +192,17 @@
       right: 0;
       background: rgba(15, 23, 42, 0.92);
       backdrop-filter: blur(10px);
-      border-top: 1px solid var(--border-color);
+      border-top: 1px solid #334155;
       padding: 12px 24px;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 14px;
       z-index: 20;
     }
     .btn-ctrl {
-      background: #1e293b;
-      color: var(--text-main);
-      border: 1px solid var(--border-color);
+      background: #334155;
+      color: #f8fafc;
+      border: 1px solid #475569;
       padding: 6px 12px;
       border-radius: 6px;
       font-size: 0.85rem;
@@ -297,10 +214,10 @@
       transition: all 0.2s;
       white-space: nowrap;
     }
-    .btn-ctrl:hover { background: #334155; }
+    .btn-ctrl:hover { background: #475569; }
     .btn-ctrl.active {
-      background: var(--primary);
-      border-color: var(--accent);
+      background: #0284c7;
+      border-color: #38bdf8;
     }
     .slider-container {
       flex: 1;
@@ -312,7 +229,7 @@
       display: flex;
       justify-content: space-between;
       font-size: 0.75rem;
-      color: var(--text-muted);
+      color: #94a3b8;
     }
     input[type=range] {
       -webkit-appearance: none;
@@ -328,79 +245,59 @@
       width: 16px;
       height: 16px;
       border-radius: 50%;
-      background: var(--accent);
-      box-shadow: 0 0 8px var(--accent);
-      cursor: pointer;
-    }
-    select.speed-select {
-      background: #1e293b;
-      border: 1px solid var(--border-color);
-      color: var(--text-main);
-      padding: 5px 8px;
-      border-radius: 6px;
-      font-size: 0.8rem;
+      background: #38bdf8;
+      box-shadow: 0 0 8px #38bdf8;
       cursor: pointer;
     }
   </style>
 </head>
 <body>
 
-  <!-- 側邊劇本工作台 -->
   <div class="sidebar">
-    <div class="header-box">
-      <h2>🛸 無人機群飛劇本工作台</h2>
-      <span class="badge-v2">v2.0</span>
-    </div>
+    <h2>🛸 無人機群飛劇本工作台</h2>
 
-    <!-- 伺服器網址 -->
     <div class="form-group">
-      <label>伺服器網址</label>
-      <div class="server-row">
-        <input type="text" id="serverUrl" value="http://localhost:8000" />
-        <button class="btn-pill" onclick="switchServer('render')" title="切換為雲端伺服器">雲端</button>
-        <button class="btn-pill" onclick="switchServer('local')" title="切換為本機伺服器">本機</button>
-      </div>
-    </div>
-
-    <!-- Gemini API Key (可選) -->
-    <div class="form-group">
-      <label>Gemini API Key (自訂或留空使用後端預設)</label>
-      <input type="password" id="apiKeyInput" placeholder="AIzaSy... (選填)" />
-    </div>
-
-    <div class="row-2">
-      <div class="form-group">
-        <label>座號 / 姓名</label>
-        <input type="text" id="studentName" value="113翁衝衝" />
-      </div>
-      <div class="form-group">
-        <label>無人機總架數</label>
-        <input type="number" id="droneCount" value="600" min="10" max="1500" onchange="updateInsertSceneOptions()" />
-      </div>
+      <label>伺服器網址 (Render 雲端)</label>
+      <input type="text" id="serverUrl" value="https://droneserver-69c9.onrender.com" />
     </div>
 
     <div class="form-group">
-      <label>🎯 軌跡追蹤指定 (all、1、1-10 或 1,5,10)</label>
+      <label>座號 / 姓名</label>
+      <input type="text" id="studentName" value="113翁衝衝" />
+    </div>
+
+    <div class="form-group">
+      <label>無人機總架數</label>
+      <input type="number" id="droneCount" value="700" min="10" max="800" onchange="updateInsertSceneOptions()" />
+    </div>
+
+    <div class="form-group">
+      <label>🎯 軌跡追蹤指定 (輸入 1 或 1,5,10 或 1-10 或 all)</label>
       <input type="text" id="trackDroneInput" value="all" onchange="renderAtProgress(currentGlobalProgress)" />
     </div>
 
-    <!-- 圖片轉無人機 -->
     <div class="form-group">
-      <label>🖼️ 圖片轉無人機 (模式與插入幕次)</label>
+      <label>🖼️ 圖片轉無人機 (可選模式與幕次)</label>
       <div class="image-upload-box">
         <input type="file" id="imageInput" accept="image/*" />
-        <select id="imageModeSelect">
-          <option value="pixel">🌟 實心彩色像素模式 (圖騰/相片/彩圖)</option>
-          <option value="skeleton">✏️ 線條骨架模式 (菱形紋/簡筆畫/線條)</option>
-        </select>
-        <select id="insertSceneSelect">
-          <option value="end">插入為：劇本最後一幕</option>
-        </select>
+        
+        <div class="options-row">
+          <select id="imageModeSelect">
+            <option value="pixel">🌟 實心彩色像素模式 (圖騰/相片/實心圖)</option>
+            <option value="skeleton">✏️ 線條骨架模式 (菱形紋/簡筆畫/線條)</option>
+          </select>
+        </div>
+
+        <div class="options-row">
+          <select id="insertSceneSelect">
+            <option value="end">插入為：劇本最後一幕</option>
+          </select>
+        </div>
+
         <button class="btn-secondary" onclick="convertAndInsertImage()">➕ 轉為點陣並寫入指定劇幕</button>
       </div>
     </div>
 
-    <!-- 群飛劇本 -->
     <div class="form-group">
       <label>群飛劇本（逐幕描述）</label>
       <textarea id="promptInput" oninput="updateInsertSceneOptions()">第一幕：地面起飛
@@ -414,15 +311,8 @@
     </button>
 
     <div id="statusBox" class="status-msg"></div>
-
-    <!-- 匯出功能 -->
-    <div class="export-box">
-      <button onclick="exportShowJSON()">📥 匯出大秀 (JSON)</button>
-      <button onclick="exportWaypointsCSV()">📊 匯出飛控座標 (CSV)</button>
-    </div>
   </div>
 
-  <!-- 3D 視覺畫布與時間軸 -->
   <div class="main-content">
     <div class="scene-hud" id="sceneHud" style="display: none;">
       <div class="dot"></div>
@@ -434,8 +324,6 @@
 
     <div class="timeline-bar">
       <button class="btn-ctrl active" id="playBtn" onclick="togglePlay()">▶ 播放大秀</button>
-      <button class="btn-ctrl" onclick="stepScene(-1)" title="上一幕">⏮</button>
-      <button class="btn-ctrl" onclick="stepScene(1)" title="下一幕">⏭</button>
       <button class="btn-ctrl active" id="trailBtn" onclick="toggleTrails()">🌐 軌跡: 顯示</button>
 
       <div class="slider-container">
@@ -445,13 +333,6 @@
         </div>
         <input type="range" id="timelineSlider" min="0" max="1000" value="0" oninput="onSliderDrag(this.value)" />
       </div>
-
-      <select class="speed-select" id="speedSelect" onchange="updateSpeed(this.value)">
-        <option value="0.5">0.5x</option>
-        <option value="1.0" selected>1.0x</option>
-        <option value="1.5">1.5x</option>
-        <option value="2.0">2.0x</option>
-      </select>
     </div>
   </div>
 
@@ -461,38 +342,11 @@
     let isPlaying = false;
     let showTrails = true;
     let currentGlobalProgress = 0.0;
-    let playbackSpeed = 1.0;
-    const BASE_TRANSITION_SECONDS = 3.5;
-    const BASE_DWELL_SECONDS = 2.0;
+    const TRANSITION_SECONDS = 3.5;
+    const DWELL_SECONDS = 2.0;
     let lastTimestamp = null;
     let animationFrameId = null;
 
-    // 自動判斷後端伺服器網址
-    const hostname = window.location.hostname;
-    const serverInput = document.getElementById("serverUrl");
-    if (hostname === "localhost" || hostname === "127.0.0.1") {
-      serverInput.value = window.location.origin;
-    } else if (hostname.endsWith("onrender.com")) {
-      serverInput.value = window.location.origin;
-    } else {
-      // 若是在 GitHub Pages (github.io) 或本地檔案 (file://) 開啟，預設連線至 Render 雲端後端
-      serverInput.value = "https://droneserver-69c9.onrender.com";
-    }
-
-    function switchServer(mode) {
-      const input = document.getElementById("serverUrl");
-      if (mode === "render") {
-        input.value = "https://droneserver-69c9.onrender.com";
-      } else {
-        input.value = "http://localhost:8000";
-      }
-    }
-
-    function updateSpeed(val) {
-      playbackSpeed = parseFloat(val) || 1.0;
-    }
-
-    // 初始化 Plotly 3D 場景
     function initPlotly() {
       const layout = {
         paper_bgcolor: "#090d16",
@@ -528,7 +382,6 @@
     }
     initPlotly();
 
-    // 更新劇本下拉選單
     function updateInsertSceneOptions() {
       const promptInput = document.getElementById("promptInput");
       const insertSelect = document.getElementById("insertSceneSelect");
@@ -547,7 +400,6 @@
     }
     updateInsertSceneOptions();
 
-    // 解析追蹤無人機字串
     function getTrackedDroneSet(totalDrones) {
       const inputStr = (document.getElementById("trackDroneInput").value || "").trim().toLowerCase();
       if (!inputStr || inputStr === "all") return null;
@@ -575,7 +427,6 @@
       return tracked;
     }
 
-    // 貪婪最近鄰配對（最小化航行總距離）
     function optimizePairings(fromPts, toPts) {
       const n = Math.min(fromPts.length, toPts.length);
       const usedTo = new Set();
@@ -643,7 +494,6 @@
       }
     }
 
-    // 依進度渲染 3D 畫面
     function renderAtProgress(progress) {
       if (!showScenes || showScenes.length === 0) return;
 
@@ -670,7 +520,6 @@
       const trajY = [];
       const trajZ = [];
 
-      // 三次平滑過渡
       const smoothT = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
       const isArrived = (t === 0.0 || t >= 0.98);
       const arcFactor = Math.sin(t * Math.PI);
@@ -696,10 +545,10 @@
         const isTracked = (trackedSet === null || trackedSet.has(i));
         
         if (trackedSet !== null && isTracked) {
-          curColors.push("#FF007F"); // 高亮桃紅
+          curColors.push("#FF0055");
           curSizes.push(5.5);
         } else if (trackedSet !== null && !isTracked) {
-          curColors.push("rgba(148, 163, 184, 0.3)");
+          curColors.push("rgba(148, 163, 184, 0.35)");
           curSizes.push(2.5);
         } else {
           curColors.push(t < 0.5 ? (fp.color || "#38bdf8") : (tp.color || "#38bdf8"));
@@ -719,7 +568,7 @@
           x: [trajX.length > 0 ? trajX : [0]],
           y: [trajY.length > 0 ? trajY : [4]],
           z: [trajZ.length > 0 ? trajZ : [0]],
-          "line.color": trackedSet !== null ? "#FF007F" : "rgba(56, 189, 248, 0.35)",
+          "line.color": trackedSet !== null ? "#FF0055" : "rgba(56, 189, 248, 0.35)",
           "line.width": trackedSet !== null ? 2.8 : 1.2
         }, [0]);
 
@@ -742,7 +591,6 @@
       updateHUD(activeSceneIdx, isArrived);
     }
 
-    // 動畫循環
     function animationLoop(timestamp) {
       if (!isPlaying) return;
 
@@ -751,9 +599,7 @@
       lastTimestamp = timestamp;
 
       const totalTransitions = Math.max(1, showScenes.length - 1);
-      const transitionDuration = BASE_TRANSITION_SECONDS / playbackSpeed;
-      const dwellDuration = BASE_DWELL_SECONDS / playbackSpeed;
-      const speed = 1.0 / (transitionDuration + dwellDuration);
+      const speed = 1.0 / (TRANSITION_SECONDS + DWELL_SECONDS);
 
       currentGlobalProgress += dt * speed * totalTransitions;
 
@@ -798,15 +644,6 @@
       document.getElementById("playBtn").classList.remove("active");
     }
 
-    function stepScene(delta) {
-      if (!showScenes || showScenes.length === 0) return;
-      pausePlay();
-      const currentIdx = Math.round(currentGlobalProgress);
-      const targetIdx = Math.max(0, Math.min(showScenes.length - 1, currentIdx + delta));
-      currentGlobalProgress = targetIdx;
-      renderAtProgress(currentGlobalProgress);
-    }
-
     function onSliderDrag(val) {
       if (!showScenes || showScenes.length === 0) return;
       pausePlay();
@@ -815,7 +652,6 @@
       renderAtProgress(currentGlobalProgress);
     }
 
-    // 圖片轉點陣
     async function convertAndInsertImage() {
       const fileInput = document.getElementById("imageInput");
       const serverUrl = document.getElementById("serverUrl").value.trim().replace(/\/$/, "");
@@ -827,12 +663,6 @@
 
       if (!fileInput.files || fileInput.files.length === 0) {
         alert("請先選擇一張圖檔 (PNG 或 JPG)！");
-        return;
-      }
-
-      if (serverUrl.includes("github.com") || serverUrl.includes("github.io")) {
-        statusBox.className = "status-msg error";
-        statusBox.innerText = "❌ 伺服器網址不能填寫 GitHub 網址！請點擊右側【雲端】切換至 Render 伺服器。";
         return;
       }
 
@@ -868,6 +698,7 @@
           customImageScenes[sceneKey] = res.scene.points;
 
           let lines = promptInput.value.trim().split("\n").filter(l => l.trim());
+          
           if (insertTarget === "end") {
             lines.push(sceneKey);
           } else {
@@ -897,24 +728,16 @@
       reader.readAsDataURL(file);
     }
 
-    // 發送劇本生成大秀
     async function requestDroneShow() {
       const serverUrl = document.getElementById("serverUrl").value.trim().replace(/\/$/, "");
       const studentName = document.getElementById("studentName").value.trim();
       const droneCount = parseInt(document.getElementById("droneCount").value);
       const prompt = document.getElementById("promptInput").value.trim();
-      const apiKey = document.getElementById("apiKeyInput").value.trim();
       const statusBox = document.getElementById("statusBox");
       const submitBtn = document.getElementById("submitBtn");
 
       if (!prompt) {
         alert("請輸入群飛劇本！");
-        return;
-      }
-
-      if (serverUrl.includes("github.com") || serverUrl.includes("github.io")) {
-        statusBox.className = "status-msg error";
-        statusBox.innerText = "❌ 伺服器網址不能填寫 GitHub 網址！\nGitHub / GitHub Pages 僅提供靜態檔案展示，無法執行 Python 運算後端。\n👉 請點擊網址右側的【雲端】按鈕切換為 Render 雲端後端，或點擊【本機】。";
         return;
       }
 
@@ -930,8 +753,7 @@
           body: JSON.stringify({
             student_name: studentName,
             drone_count: droneCount,
-            prompt: prompt,
-            api_key: apiKey || null
+            prompt: prompt
           })
         });
 
@@ -949,7 +771,6 @@
 
         showScenes = showData.scenes;
 
-        // 套用自訂圖片造型點陣
         for (let scene of showScenes) {
           for (let [imgKey, pts] of Object.entries(customImageScenes)) {
             if (scene.name.includes(imgKey) || imgKey.includes(scene.name)) {
@@ -958,7 +779,6 @@
           }
         }
 
-        // 貪婪配對優化航線
         for (let s = 0; s < showScenes.length - 1; s++) {
           const currentPts = showScenes[s].points;
           const nextPts = showScenes[s + 1].points;
@@ -981,44 +801,6 @@
       } finally {
         submitBtn.disabled = false;
       }
-    }
-
-    // 匯出 JSON
-    function exportShowJSON() {
-      if (!showScenes || showScenes.length === 0) {
-        alert("尚無可匯出的燈光秀資料，請先生成大秀！");
-        return;
-      }
-      const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify({
-        student: document.getElementById("studentName").value,
-        drone_count: parseInt(document.getElementById("droneCount").value),
-        created_at: new Date().toISOString(),
-        scenes: showScenes
-      }, null, 2));
-      const dlAnchor = document.createElement("a");
-      dlAnchor.setAttribute("href", dataStr);
-      dlAnchor.setAttribute("download", `drone_show_${Date.now()}.json`);
-      dlAnchor.click();
-    }
-
-    // 匯出飛控座標 CSV
-    function exportWaypointsCSV() {
-      if (!showScenes || showScenes.length === 0) {
-        alert("尚無可匯出的燈光秀資料，請先生成大秀！");
-        return;
-      }
-      let csv = "scene_index,scene_name,drone_id,x,y,z,color\n";
-      showScenes.forEach((scene, sIdx) => {
-        scene.points.forEach((pt, dIdx) => {
-          csv += `${sIdx + 1},"${scene.name}",${dIdx + 1},${pt.x},${pt.y},${pt.z},"${pt.color}"\n`;
-        });
-      });
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const dlAnchor = document.createElement("a");
-      dlAnchor.setAttribute("href", url);
-      dlAnchor.setAttribute("download", `drone_waypoints_${Date.now()}.csv`);
-      dlAnchor.click();
     }
   </script>
 </body>
