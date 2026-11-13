@@ -44,6 +44,36 @@ def read_root():
         "message": "無人機群飛 3D 奔放幾何導演引擎運作中！"
     }
 
+@app.get("/api/test-ai")
+def test_ai():
+    if not GEMINI_API_KEY:
+        return {"status": "error", "message": "GEMINI_API_KEY is not set in environment"}
+    
+    results = {}
+    models_to_test = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    
+    for m in models_to_test:
+        try:
+            resp = client.models.generate_content(
+                model=m,
+                contents="請回覆 JSON: {"reply": "ok"}",
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1
+                )
+            )
+            results[m] = {"status": "success", "text": resp.text.strip()}
+        except Exception as e:
+            results[m] = {"status": "error", "error": str(e), "type": type(e).__name__}
+            
+    return {
+        "status": "tested",
+        "api_key_prefix": (GEMINI_API_KEY[:6] + "...") if len(GEMINI_API_KEY) > 6 else "short",
+        "results": results
+    }
+
+
 # ----------------- 資料模型定義 -----------------
 class PrimitiveElement(BaseModel):
     shape_type: str = Field(description="圖元類型: text, heart, ring, spiral, sphere, star, cone, wave, ground_grid")
