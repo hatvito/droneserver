@@ -57,7 +57,7 @@ def test_ai():
         try:
             resp = client.models.generate_content(
                 model=m,
-                contents="請回覆 JSON: {"reply": "ok"}",
+                contents='ping',
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.1
@@ -516,7 +516,7 @@ async def generate_show(req: ShowRequest):
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
             def call_creative_director():
-                candidate_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"]
+                candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
                 last_ex = None
                 for m in candidate_models:
                     try:
@@ -548,24 +548,61 @@ async def generate_show(req: ShowRequest):
             directives = []
             for idx, line in enumerate(lines):
                 clean_l = re.sub(r"^第[一二三四五六七八九十\d]+幕[：:]\s*", "", line)
-                quote_match = re.search(r'[\u300c\u300e\u201c\'"]([^\u300d\u300f\u201d\'"]+)[\u300d\u300f\u201d\'"]', clean_l)
-                extracted_text = quote_match.group(1) if quote_match else clean_l
-
+                
+                # 色彩萃取
                 colors = []
-                if "紅" in clean_l or "赤" in clean_l: colors.append("#FF0055")
                 if "藍" in clean_l or "青" in clean_l: colors.append("#0088FF")
+                if "白" in clean_l: colors.append("#FFFFFF")
+                if "紅" in clean_l or "赤" in clean_l: colors.append("#FF0055")
                 if "金" in clean_l or "黃" in clean_l: colors.append("#FFD700")
                 if "綠" in clean_l: colors.append("#00E676")
                 if "紫" in clean_l: colors.append("#A020F0")
                 if "粉" in clean_l: colors.append("#FF69B4")
-                if "白" in clean_l: colors.append("#FFFFFF")
                 if not colors: colors = ["#00F0FF"]
+
+                quote_match = re.search(r'[「『"\']([^」』"\']+)[」』"\']', clean_l)
 
                 if "起飛" in clean_l or "停機" in clean_l or "地面" in clean_l:
                     directives.append(SceneDirective(
                         scene_name=line,
                         elements=[PrimitiveElement(shape_type="ground_grid", ratio=1.0, colors=["#00E676", "#00F0FF"], gradient_direction="y_axis")]
                     ))
+
+                elif any(k in clean_l.lower() for k in ["logo", "商標", "標誌", "校徽", "圖騰", "標章"]):
+                    # 智慧 LOGO 徽章複合圖元 (文字核心 + 外圍光環)
+                    brand_name = "富邦"
+                    if quote_match:
+                        brand_name = quote_match.group(1)
+                    else:
+                        m_brand = re.search(r'([\u4e00-\u9fa5A-Za-z0-9]{2,6})\s*(?:的)?(?:LOGO|logo|商標|標誌|校徽)', clean_l)
+                        if m_brand:
+                            brand_name = m_brand.group(1)
+                        elif "富邦" in clean_l:
+                            brand_name = "富邦"
+                        elif "士商" in clean_l or "士林高商" in clean_l:
+                            brand_name = "士商"
+                    
+                    logo_colors = colors if len(colors) >= 2 else (colors + ["#FFFFFF"])
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[
+                            PrimitiveElement(shape_type="text", text=brand_name, ratio=0.6, colors=logo_colors, center=[0.0, 4.0, 3.8]),
+                            PrimitiveElement(shape_type="ring", ratio=0.4, colors=logo_colors, center=[0.0, 4.0, 3.8], rotate_deg=[15, 0, 0])
+                        ]
+                    ))
+
+                elif "城堡" in clean_l or "宮殿" in clean_l or "塔" in clean_l:
+                    # 宏偉 3D 城堡複合幾何 (城垛底座 + 中央尖塔 + 頂端光芒)
+                    castle_colors = colors if len(colors) >= 2 else ["#FF0055", "#FFFFFF"]
+                    directives.append(SceneDirective(
+                        scene_name=line,
+                        elements=[
+                            PrimitiveElement(shape_type="sphere", ratio=0.4, center=[0.0, 4.0, 2.7], scale=[1.4, 1.0, 0.7], colors=castle_colors),
+                            PrimitiveElement(shape_type="spiral", ratio=0.3, center=[0.0, 4.0, 4.1], scale=[0.7, 0.7, 1.2], colors=castle_colors, gradient_direction="z_axis_up"),
+                            PrimitiveElement(shape_type="star", ratio=0.3, center=[0.0, 4.0, 5.2], colors=["#FFFFFF", castle_colors[0]])
+                        ]
+                    ))
+
                 elif "心" in clean_l or "愛心" in clean_l:
                     directives.append(SceneDirective(
                         scene_name=line,
@@ -597,9 +634,16 @@ async def generate_show(req: ShowRequest):
                         elements=[PrimitiveElement(shape_type="wave", ratio=1.0, colors=colors or ["#0077B6", "#00B4D8"])]
                     ))
                 else:
+                    # 純文字排版：過濾提示詞雜訊，只排核心名詞
+                    if quote_match:
+                        pure_text = quote_match.group(1)
+                    else:
+                        cleaned = re.sub(r'^(天空用|在空中|用|以)?[\u4e00-\u9fa5\w色\s與和跟]+(排成|組成|顯示|呈現|排出|展示|變成)', '', clean_l)
+                        cleaned = re.sub(r'(大字|字樣|圖形|形狀|圖案|樣式|造型).*$', '', cleaned)
+                        pure_text = cleaned.strip()[:6] if cleaned.strip() else clean_l[:4]
                     directives.append(SceneDirective(
                         scene_name=line,
-                        elements=[PrimitiveElement(shape_type="text", text=extracted_text[:8], ratio=1.0, colors=colors)]
+                        elements=[PrimitiveElement(shape_type="text", text=pure_text, ratio=1.0, colors=colors)]
                     ))
 
         # ---------------- 鐵則：確保開場永遠為地面停機坪起飛排列 ----------------
@@ -615,7 +659,6 @@ async def generate_show(req: ShowRequest):
             return False
 
         if len(directives) == 0 or not is_ground_scene(directives[0]):
-            # 使用者劇本開頭未包含地面起飛，自動於最前方插入「地面停機坪排列（起飛準備）」
             ground_scene = SceneDirective(
                 scene_name="第一幕：地面停機坪排列（起飛準備）",
                 elements=[PrimitiveElement(
@@ -627,7 +670,6 @@ async def generate_show(req: ShowRequest):
             )
             directives.insert(0, ground_scene)
         else:
-            # 第一幕已是地面起飛，確保包含 ground_grid 圖元
             first_d = directives[0]
             first_elems = first_d.get("elements", []) if isinstance(first_d, dict) else getattr(first_d, "elements", [])
             has_grid = any((el.get("shape_type") if isinstance(el, dict) else getattr(el, "shape_type", "")) == "ground_grid" for el in first_elems)
@@ -646,7 +688,8 @@ async def generate_show(req: ShowRequest):
             rendered_scenes.append({"name": directive_obj.scene_name, "points": pts})
 
         print(f"[{req.student_name}] 全場幾何渲染完成，共 {len(rendered_scenes)} 幕！")
-        return {"status": "success", "data": json.dumps({"scenes": rendered_scenes})}
+        ai_mode = "gemini" if "ai_resp" in locals() and ai_resp else "fallback"
+        return {"status": "success", "ai_mode": ai_mode, "data": json.dumps({"scenes": rendered_scenes})}
 
 if __name__ == '__main__':
     import uvicorn
