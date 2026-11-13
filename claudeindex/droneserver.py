@@ -50,26 +50,31 @@ def test_ai():
         return {"status": "error", "message": "GEMINI_API_KEY is not set in environment"}
     
     results = {}
-    models_to_test = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    available_models = []
     client = genai.Client(api_key=GEMINI_API_KEY)
-    
+
+    try:
+        for model_info in client.models.list():
+            available_models.append(getattr(model_info, "name", str(model_info)))
+    except Exception as e:
+        available_models = [f"Error listing: {e}"]
+
+    models_to_test = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.0-flash", "gemini-2.5-flash"]
     for m in models_to_test:
         try:
             resp = client.models.generate_content(
                 model=m,
-                contents='ping',
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1
-                )
+                contents='ping'
             )
             results[m] = {"status": "success", "text": resp.text.strip()}
+            break
         except Exception as e:
             results[m] = {"status": "error", "error": str(e), "type": type(e).__name__}
             
     return {
         "status": "tested",
         "api_key_prefix": (GEMINI_API_KEY[:6] + "...") if len(GEMINI_API_KEY) > 6 else "short",
+        "available_models": available_models[:15],
         "results": results
     }
 
@@ -516,7 +521,7 @@ async def generate_show(req: ShowRequest):
         try:
             client = genai.Client(api_key=GEMINI_API_KEY)
             def call_creative_director():
-                candidate_models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+                candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.0-flash", "gemini-2.5-flash"]
                 last_ex = None
                 for m in candidate_models:
                     try:
