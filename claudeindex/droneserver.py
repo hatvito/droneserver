@@ -539,8 +539,9 @@ PYTHON_DIRECTOR_PROMPT = """你是一位擁有頂尖 3D 運算圖學與數學建
   - coords: np.ndarray，形狀 (n, 3)，坐標 [x, y, z]
   - colors: list[str]，長度為 n 的十六進位色碼列表 (如 '#0088FF', '#FFFFFF')
 
-【創作程式庫支援】：
+【創作程式庫支援與嚴格禁令】：
 環境中已預先注入 `np` (NumPy), `math`, `random`, `Image`, `ImageDraw`, `ImageFont`, `FONT_PATH`。
+【絕對嚴禁】：切勿 import 任何未安裝的外部套件（如 scipy, cv2, plotly, sklearn 等均嚴禁導入），所有三維坐標運算請純粹使用 NumPy (np.sin, np.cos, np.linspace, np.meshgrid) 與 math 計算，確保 100% 在沙盒中秒級運算成功！
 1. 品牌商標/文字/圖騰 (如 '富邦LOGO')：
    可使用 PIL (Image.new, ImageDraw, ImageFont.truetype(FONT_PATH, 95)) 繪製文字與向量造型，取 np.argwhere(arr > 90) 映射至 3D，並在外圍拼接旋轉 3D 光環 (ring)！
 2. 建築/機械/物體 (如 '台北101', '城堡', '太空梭')：
