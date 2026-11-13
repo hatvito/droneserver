@@ -9,6 +9,7 @@ if sys.stdout.encoding != 'utf-8':
         pass
 
 import math
+import time
 import base64
 import json
 import re
@@ -38,6 +39,20 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
 FONT_PATH = "NotoSansTC-VariableFont_wght.ttf"
+SHAPE_NAMES = {
+    "ground_grid": "地面停機坪陣列",
+    "sphere": "立體球體/軀幹",
+    "spiral": "三維螺旋/捲曲長鼻",
+    "ring": "立體光環/圓環/耳朵",
+    "star": "立體星芒/菱形",
+    "box": "3D 立方體/城垛",
+    "cylinder": "3D 圓柱體/四肢立柱",
+    "cone": "3D 圓錐體/尖塔",
+    "wave": "3D 波浪曲面/羽翼",
+    "heart": "3D 雙層愛心",
+    "text": "高解析漢字點陣"
+}
+
 request_lock = asyncio.Lock()
 
 @app.get("/")
@@ -530,8 +545,10 @@ PYTHON_DIRECTOR_PROMPT = """你是一位擁有頂尖 3D 運算圖學與數學建
    可使用 PIL (Image.new, ImageDraw, ImageFont.truetype(FONT_PATH, 95)) 繪製文字與向量造型，取 np.argwhere(arr > 90) 映射至 3D，並在外圍拼接旋轉 3D 光環 (ring)！
 2. 建築/機械/物體 (如 '台北101', '城堡', '太空梭')：
    可用柱體、圓錐、方形城垛、放射粒子等疊加組合！
-3. 動物/角色/自然 (如 '鯨魚', '雄鷹', '浪花')：
-   可用橢球面、正弦波羽翼、螺旋曲線等三維方程式計算！
+3. 動物/角色/自然 (如 '大象', '鯨魚', '雄鷹', '浪花')：
+   可用複合三維方程式（如大象：橢球軀幹 + 圓柱四肢 + 圓環大耳 + 捲曲螺旋鼻；鯨魚：正弦波羽翼 + 紡錘體），或使用 PIL 繪製動物剪影取點陣映射至 3D 空間前後錯開，立體鮮明！
+4. 若第 1 幕劇本同時提及「地面起飛」與特定造型（如「第一幕：地面起飛，排列成大象」）：
+   請拆為 2 幕輸出，第 1 幕為地面起飛待命（z=0），第 2 幕為空中立體造型！
 
 回傳必須為 JSON 格式，Schema 如下：
 {
@@ -560,6 +577,14 @@ CREATIVE_DIRECTOR_PROMPT = """你是一位完全解鎖想像力的 3D 無人機�
    - 圖元 1 (城堡基底城垛): sphere 或 box (ratio=0.4, center=[0.0, 4.0, 2.8])
    - 圖元 2 (中央高聳尖塔): spiral 或 cone (ratio=0.3, center=[0.0, 4.0, 4.2], scale=[0.7, 0.7, 1.2])
    - 圖元 3 (頂端菱形光芒冠冕): star (ratio=0.3, center=[0.0, 4.0, 5.2])
+3. 若描述為動物、生物或角色 (如 '大象', '鯨魚', '雄鷹')：
+   請發揮立體雕塑思維，使用 2~4 個圖元組合出形象（絕不只用單一球體）！
+   例如「大象」：
+   - 圖元 1 (身體軀幹): sphere (ratio=0.5, center=[0.0, 4.0, 3.8], scale=[1.4, 1.0, 1.0], colors=['#94A3B8', '#CBD5E1'])
+   - 圖元 2 (捲曲長象鼻): spiral (ratio=0.25, center=[-1.4, 4.0, 3.2], scale=[0.6, 0.6, 0.9], rotate_deg=[0, 45, 0], colors=['#94A3B8'])
+   - 圖元 3 (扇形大耳朵/四肢): ring 或 cylinder (ratio=0.25, center=[0.8, 4.0, 4.2], scale=[0.8, 0.5, 0.8], colors=['#94A3B8'])
+4. 若第 1 幕劇本同時提及「地面起飛」與特定造型（如「第一幕：地面起飛，排列成一隻大象」）：
+   請務必拆為 2 幕輸出！第 1 幕純地面起飛 (ground_grid)，第 2 幕再展示空中立體造型！
 
 可用圖元 (shape_type):
 - ground_grid: 地面停機坪 (Z=0 待命)
@@ -791,6 +816,7 @@ async def convert_image_endpoint(req: ImageSceneRequest):
 @app.post("/api/generate-show")
 async def generate_show(req: ShowRequest):
     async with request_lock:
+        t_start = time.time()
         print(f"[{req.student_name}] 正在呼叫 AI 3D 總導演思考中...")
         user_content = f"演出架數: {req.drone_count}\n劇本需求:\n{req.prompt}"
 
@@ -804,6 +830,11 @@ async def generate_show(req: ShowRequest):
         rendered_scenes = []
         ai_mode = "none"
         ai_error_msg = None
+
+        tier1_info = {"status": "skipped", "model": None, "error": None}
+        tier2_info = {"status": "skipped", "model": None, "error": None}
+        tier3_info = {"status": "skipped", "rule": None}
+        scenes_breakdown = []
 
         # =================================================================
         # 第一首選主力 (Tier 1): 方案 3 - AI Python 幾何程式設計師 (動態編程)
@@ -826,6 +857,7 @@ async def generate_show(req: ShowRequest):
                             )
                         )
                         if code_resp and code_resp.text:
+                            tier1_info["model"] = m
                             break
                     except Exception as ex_m:
                         print(f"[{req.student_name}] 模型 {m} 代碼生成異常: {ex_m}")
@@ -841,12 +873,24 @@ async def generate_show(req: ShowRequest):
                             if code_str:
                                 pts = execute_generated_code(code_str, req.drone_count)
                                 rendered_scenes.append({"name": s_name, "points": pts})
+                                scenes_breakdown.append({
+                                    "scene_name": s_name,
+                                    "drone_count": len(pts),
+                                    "generator": "Tier 1: AI 幾何程式設計師 (Python 數學曲面與向量運算)",
+                                    "code_preview": (code_str.strip()[:240] + "...") if len(code_str) > 240 else code_str.strip(),
+                                    "explanation": "由 Gemini AI 即時動態編寫 Python 幾何函數生成 3D 空間點陣與漸層色彩"
+                                })
 
                         if len(rendered_scenes) > 0:
                             ai_mode = "python_code"
+                            tier1_info["status"] = "success"
                             print(f"[{req.student_name}] 🎉 Tier 1 (AI 幾何程式設計師) 成功動態運算 {len(rendered_scenes)} 幕！")
             except Exception as e_code:
                 ai_error_msg = f"Tier 1 (Code Engine) 異常: {str(e_code)[:150]}"
+                tier1_info["status"] = "error"
+                tier1_info["error"] = str(e_code)[:200]
+                scenes_breakdown.clear()
+                rendered_scenes.clear()
                 print(f"[{req.student_name}] {ai_error_msg}，切換至 Tier 2 複合幾何圖元庫備援...")
 
         # =================================================================
@@ -871,6 +915,7 @@ async def generate_show(req: ShowRequest):
                             )
                         )
                         if prim_resp and prim_resp.text:
+                            tier2_info["model"] = m
                             break
                     except Exception as ex_m:
                         print(f"[{req.student_name}] 模型 {m} 圖元解析異常: {ex_m}")
@@ -884,12 +929,39 @@ async def generate_show(req: ShowRequest):
                             d_obj = SceneDirective(**d) if isinstance(d, dict) else d
                             pts = render_directive_to_points(d_obj, req.drone_count)
                             rendered_scenes.append({"name": d_obj.scene_name, "points": pts})
-                        
+
+                            # 解析各圖元詳情供前端除錯面板展示
+                            elem_descs = []
+                            for el in d_obj.elements:
+                                s_type = el.shape_type
+                                zh_name = SHAPE_NAMES.get(s_type, s_type)
+                                text_info = f" (文字: '{el.text}')" if el.text else ""
+                                elem_descs.append({
+                                    "shape_type": s_type,
+                                    "desc": f"{zh_name}{text_info}",
+                                    "ratio": el.ratio,
+                                    "colors": el.colors or ["#00F0FF"]
+                                })
+
+                            elem_summary = " + ".join([f"{ed['desc']}({int(round(ed['ratio']*100))}%)" for ed in elem_descs])
+                            scenes_breakdown.append({
+                                "scene_name": d_obj.scene_name,
+                                "drone_count": len(pts),
+                                "generator": "Tier 2: AI 複合幾何圖元庫 (3D 積木組合拼裝)",
+                                "elements": elem_descs,
+                                "explanation": f"AI 拆解構圖：{elem_summary}"
+                            })
+
                         if len(rendered_scenes) > 0:
                             ai_mode = "primitive_composer"
+                            tier2_info["status"] = "success"
                             print(f"[{req.student_name}] 🧱 Tier 2 (AI 複合幾何圖元庫) 成功搭建 {len(rendered_scenes)} 幕！")
             except Exception as e_prim:
                 ai_error_msg = (ai_error_msg or "") + f" | Tier 2 異常: {str(e_prim)[:150]}"
+                tier2_info["status"] = "error"
+                tier2_info["error"] = str(e_prim)[:200]
+                scenes_breakdown.clear()
+                rendered_scenes.clear()
                 print(f"[{req.student_name}] 切換至 Tier 3 本地智慧語意備援...")
 
         # =================================================================
@@ -897,17 +969,45 @@ async def generate_show(req: ShowRequest):
         # =================================================================
         if ai_mode == "none":
             ai_mode = "semantic_fallback"
+            tier3_info["status"] = "active"
+            tier3_info["rule"] = "本地智慧語意引擎 (商標徽章/立體城堡/漢字居中)"
             lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
             rendered_scenes = run_semantic_fallback(lines, req.drone_count)
+            for s in rendered_scenes:
+                scenes_breakdown.append({
+                    "scene_name": s["name"],
+                    "drone_count": len(s["points"]),
+                    "generator": "Tier 3: 本地離線智慧語意引擎 (保底無碰撞航線)",
+                    "explanation": "依據劇本關鍵字自動匹配專屬 3D 複合圖元與多字排版"
+                })
             print(f"[{req.student_name}] ⚡ Tier 3 (本地智慧語意備援引擎) 順利生成 {len(rendered_scenes)} 幕！")
 
         # ---------------- 鐵則：確保開場永遠為地面停機坪排列 (Z=0) ----------------
         ensure_ground_takeoff_scenes(rendered_scenes, req.drone_count)
+        if len(scenes_breakdown) < len(rendered_scenes):
+            scenes_breakdown.insert(0, {
+                "scene_name": rendered_scenes[0]["name"],
+                "drone_count": len(rendered_scenes[0]["points"]),
+                "generator": "安全鐵則起飛引擎 (Ground Launchpad)",
+                "explanation": "系統防護鐵則：所有群飛開場強制於地面 Z=0.0 機坪點亮並準備升空"
+            })
+
+        elapsed_sec = round(time.time() - t_start, 2)
+        debug_info = {
+            "model_used": tier1_info.get("model") or tier2_info.get("model") or "本地離線引擎",
+            "elapsed_sec": f"{elapsed_sec} 秒",
+            "active_tier": "Tier 1: AI 幾何程式設計師 (Python Code)" if ai_mode == "python_code" else ("Tier 2: AI 複合幾何圖元庫 (Primitive Composer)" if ai_mode == "primitive_composer" else "Tier 3: 本地離線智慧語意備援"),
+            "tier1": tier1_info,
+            "tier2": tier2_info,
+            "tier3": tier3_info,
+            "scenes_breakdown": scenes_breakdown
+        }
 
         return {
             "status": "success",
             "ai_mode": ai_mode,
             "ai_error": ai_error_msg,
+            "debug_info": debug_info,
             "data": json.dumps({"scenes": rendered_scenes})
         }
 
