@@ -846,7 +846,12 @@
         document.getElementById("totalScenesText").innerText = `共 ${showScenes.length} 幕`;
         
         statusBox.className = "status-msg success";
-        const aiBadge = resData.ai_mode === "gemini" ? "🤖 Gemini AI 導演" : "⚡ 智慧幾何備援引擎";
+        let aiBadge = "⚡ 智慧幾何備援引擎";
+        if (resData.ai_mode === "python_code") {
+          aiBadge = "🤖 AI 幾何程式設計師 (Tier 1)";
+        } else if (resData.ai_mode === "primitive_composer") {
+          aiBadge = "🧱 AI 複合幾何圖元庫 (Tier 2)";
+        }
         statusBox.innerText = `🎉 【${aiBadge}】編排成功！${droneCount} 架無人機已完成立體防撞航線規劃，即刻播放！`;
 
         renderAtProgress(0.0);
