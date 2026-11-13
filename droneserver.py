@@ -57,21 +57,40 @@ def test_ai():
         return {"status": "error", "message": "GEMINI_API_KEY is not set"}
     
     results = {}
-    client = genai.Client(api_key=GEMINI_API_KEY)
-    test_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.0-flash", "gemini-2.5-flash"]
+    http_opts = types.HttpOptions(timeout=6000)
+    client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
     
-    for m in test_models:
+    available_models = []
+    try:
+        for m in client.models.list():
+            available_models.append(m.name)
+    except Exception as e:
+        available_models = [f"list_error: {str(e)[:150]}"]
+    
+    test_candidates = []
+    for am in available_models:
+        if isinstance(am, str) and not am.startswith("list_error") and ("flash" in am or "pro" in am):
+            test_candidates.append(am)
+            
+    if not test_candidates:
+        test_candidates = [
+            "models/gemini-3.8-flash", "gemini-3.8-flash",
+            "models/gemini-2.5-flash", "gemini-2.5-flash",
+            "models/gemini-1.5-flash", "gemini-1.5-flash"
+        ]
+    
+    for m in test_candidates[:4]:
         try:
             resp = client.models.generate_content(
                 model=m,
                 contents="ping"
             )
             results[m] = {"status": "success", "text": resp.text.strip()}
-            return {"status": "ok", "working_model": m, "results": results}
+            return {"status": "ok", "working_model": m, "available_models": available_models[:15], "results": results}
         except Exception as e:
             results[m] = {"status": "error", "msg": str(e)[:150]}
             
-    return {"status": "all_failed", "results": results}
+    return {"status": "all_failed", "available_models": available_models[:15], "results": results}
 
 # ----------------- 資料模型定義 -----------------
 class PrimitiveElement(BaseModel):
@@ -766,7 +785,11 @@ async def generate_show(req: ShowRequest):
         print(f"[{req.student_name}] 正在呼叫 AI 3D 總導演思考中...")
         user_content = f"演出架數: {req.drone_count}\n劇本需求:\n{req.prompt}"
 
-        candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.0-flash", "gemini-2.5-flash"]
+        candidate_models = [
+            "models/gemini-3.8-flash", "gemini-3.8-flash",
+            "models/gemini-2.5-flash", "gemini-2.5-flash",
+            "models/gemini-1.5-flash", "gemini-1.5-flash"
+        ]
         rendered_scenes = []
         ai_mode = "none"
         ai_error_msg = None
@@ -776,7 +799,8 @@ async def generate_show(req: ShowRequest):
         # =================================================================
         if GEMINI_API_KEY:
             try:
-                client = genai.Client(api_key=GEMINI_API_KEY)
+                http_opts = types.HttpOptions(timeout=7000)
+                client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
                 code_resp = None
                 for m in candidate_models:
                     try:
@@ -819,7 +843,8 @@ async def generate_show(req: ShowRequest):
         # =================================================================
         if ai_mode == "none" and GEMINI_API_KEY:
             try:
-                client = genai.Client(api_key=GEMINI_API_KEY)
+                http_opts = types.HttpOptions(timeout=7000)
+                client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
                 prim_resp = None
                 for m in candidate_models:
                     try:
