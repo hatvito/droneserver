@@ -509,7 +509,7 @@ async def generate_show(req: ShowRequest):
             client = genai.Client(api_key=GEMINI_API_KEY)
             def call_creative_director():
                 candidate_models = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.0-flash", "gemini-2.5-flash"]
-                last_ex = None
+                all_errors = []
                 for m in candidate_models:
                     try:
                         print(f"[{req.student_name}] 嘗試使用 AI 模型: {m}")
@@ -524,10 +524,11 @@ async def generate_show(req: ShowRequest):
                             )
                         )
                     except Exception as ex:
-                        print(f"[{req.student_name}] 模型 {m} 異常: {ex}")
-                        last_ex = ex
+                        err_str = f"{m} -> {ex}"
+                        print(f"[{req.student_name}] 模型異常: {err_str}")
+                        all_errors.append(err_str)
                         continue
-                raise last_ex or Exception("所有可用 Gemini 模型皆無法連線")
+                raise Exception(" \n ".join(all_errors))
 
             ai_resp = await asyncio.wait_for(asyncio.to_thread(call_creative_director), timeout=35.0)
             director_data = json.loads(ai_resp.text.strip())
