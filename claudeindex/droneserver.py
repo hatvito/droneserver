@@ -539,17 +539,38 @@ PYTHON_DIRECTOR_PROMPT = """你是一位擁有頂尖 3D 運算圖學與數學建
   - coords: np.ndarray，形狀 (n, 3)，坐標 [x, y, z]
   - colors: list[str]，長度為 n 的十六進位色碼列表 (如 '#0088FF', '#FFFFFF')
 
-【創作程式庫支援與嚴格禁令】：
-環境中已預先注入 `np` (NumPy), `math`, `random`, `Image`, `ImageDraw`, `ImageFont`, `FONT_PATH`。
-【絕對嚴禁】：切勿 import 任何未安裝的外部套件（如 scipy, cv2, plotly, sklearn 等均嚴禁導入），所有三維坐標運算請純粹使用 NumPy (np.sin, np.cos, np.linspace, np.meshgrid) 與 math 計算，確保 100% 在沙盒中秒級運算成功！
-1. 品牌商標/文字/圖騰 (如 '富邦LOGO')：
-   可使用 PIL (Image.new, ImageDraw, ImageFont.truetype(FONT_PATH, 95)) 繪製文字與向量造型，取 np.argwhere(arr > 90) 映射至 3D，並在外圍拼接旋轉 3D 光環 (ring)！
-2. 建築/機械/物體 (如 '台北101', '城堡', '太空梭')：
-   可用柱體、圓錐、方形城垛、放射粒子等疊加組合！
-3. 動物/角色/自然 (如 '大象', '鯨魚', '雄鷹', '浪花')：
-   可用複合三維方程式（如大象：橢球軀幹 + 圓柱四肢 + 圓環大耳 + 捲曲螺旋鼻；鯨魚：正弦波羽翼 + 紡錘體），或使用 PIL 繪製動物剪影取點陣映射至 3D 空間前後錯開，立體鮮明！
-4. 若第 1 幕劇本同時提及「地面起飛」與特定造型（如「第一幕：地面起飛，排列成大象」）：
-   請拆為 2 幕輸出，第 1 幕為地面起飛待命（z=0），第 2 幕為空中立體造型！
+【創作程式庫支援與內建工具】：
+環境中已預先注入 `np` (NumPy), `math`, `random`, `Image`, `ImageDraw`, `ImageFont`, `FONT_PATH`，以及專業 3D 擠出工具 `extrude_canvas_to_3d(img, n, thickness=0.9)`。
+【絕對嚴格禁令】：嚴禁 import 任何未安裝外部套件（如 scipy, cv2, plotly 等），嚴禁使用隨機高斯雜訊 (np.random.randn) 拼湊頭部或軀幹（雜訊會導致圖案過於模糊粗糙！）。
+
+【高擬真 3D 燈光秀核心秘訣 - 避免圖案過於簡化或粗糙】：
+凡涉及具體生物、動物、角色、徽章、建築或交通工具（如：大象、老鷹、鯨魚、恐龍、蝴蝶、火箭、城堡、跑車、LOGO 標誌）：
+一律使用 PIL Image 與 ImageDraw 在 800x600 畫布上精細描繪該物體的經典外觀多邊形 (draw.polygon)、線條特徵 (draw.line)、眼睛裝飾 (draw.ellipse)，並調配豐富對比的高彩度色彩（絕不全場使用單一灰色！）：
+繪製完成後直接呼叫 `return extrude_canvas_to_3d(img, n, thickness=1.0)` 即可自動擠出具備三維厚度與鮮明色彩的 3000 架無人機！
+
+【高擬真示範 1：大象 (包含背部拱起、捲曲長鼻、扇形大耳、象牙與眼睛)】：
+def generate_scene(n):
+    img = Image.new("RGBA", (800, 600), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # 大象主身軀與四肢多邊形 (鋼藍色帶淺藍描邊)
+    body_poly = [(130, 220), (160, 250), (190, 290), (210, 340), (220, 390), (230, 520), (270, 520), (280, 420), (300, 520), (340, 520), (350, 410), (480, 410), (490, 520), (530, 520), (540, 420), (560, 520), (600, 520), (610, 360), (620, 330), (600, 240), (500, 200), (380, 210), (310, 220), (240, 240), (190, 210), (150, 190), (130, 220)]
+    draw.polygon(body_poly, fill=(70, 130, 180, 255), outline=(176, 224, 230, 255), width=4)
+    # 扇形立體大耳朵 (矢車菊藍)
+    ear_poly = [(290, 220), (360, 230), (390, 280), (380, 360), (330, 380), (280, 320), (290, 220)]
+    draw.polygon(ear_poly, fill=(100, 149, 237, 255), outline=(224, 255, 255, 255), width=3)
+    # 威武彎曲象牙 (純白/象牙黃粗線)
+    draw.line([(225, 330), (200, 360), (170, 370), (150, 350)], fill=(255, 255, 240, 255), width=10)
+    # 炯炯有神的金黃色眼睛
+    draw.ellipse([(260, 245), (275, 260)], fill=(255, 215, 0, 255))
+    return extrude_canvas_to_3d(img, n, thickness=1.0)
+
+【高擬真示範 2：城堡與星芒】：
+可用主城牆矩形 + 四座高聳尖塔 (polygon) + 金色城垛 + 頂部純白星芒 (draw.polygon)，色彩搭配金色、深藍與磚白，層次分明！
+
+【高擬真示範 3：文字與太陽光環】：
+可用 ImageFont 寫出高解析大字，外圍用 draw.arc 或數學正弦波環繞立體光環！
+
+若第 1 幕劇本同時提及「地面起飛」與特定造型，請拆為 2 幕輸出，第 1 幕為地面起飛待命（z=0），第 2 幕為空中立體造型！
 
 回傳必須為 JSON 格式，Schema 如下：
 {
@@ -603,6 +624,64 @@ CREATIVE_DIRECTOR_PROMPT = """你是一位完全解鎖想像力的 3D 無人機�
 回傳必須為 JSON 格式，Schema 為 DirectorScript。
 """
 
+
+def extrude_canvas_to_3d(img, n: int, x_range=(-5.5, 5.5), z_range=(1.8, 6.8), y_center=4.0, thickness=0.9):
+    """
+    專業無人機立體擠出工具：
+    將 PIL Image 繪製的高擬真向量多邊形、線條與文字，自動轉換為具備 3D 空間厚度、平滑防撞與精美配色的 3000 架滿編無人機！
+    """
+    arr = np.array(img)
+    if arr.ndim == 2:
+        alpha = arr
+        has_color = False
+    elif arr.shape[2] == 4:
+        alpha = arr[:, :, 3]
+        has_color = True
+    else:
+        alpha = np.mean(arr[:, :, :3], axis=-1)
+        has_color = True
+
+    coords = np.argwhere(alpha > 30)
+    if len(coords) == 0:
+        coords = np.array([[300, 400]])
+
+    if len(coords) >= n:
+        idx = np.random.choice(len(coords), n, replace=False)
+        sampled = coords[idx]
+    else:
+        rep = (n // len(coords)) + 1
+        sampled = np.tile(coords, (rep, 1))[:n]
+
+    min_r, max_r = np.min(sampled[:, 0]), np.max(sampled[:, 0])
+    min_c, max_c = np.min(sampled[:, 1]), np.max(sampled[:, 1])
+
+    range_r = max(max_r - min_r, 1)
+    range_c = max(max_c - min_c, 1)
+
+    norm_x = (sampled[:, 1] - min_c) / range_c
+    norm_z = (max_r - sampled[:, 0]) / range_r
+
+    px = x_range[0] + norm_x * (x_range[1] - x_range[0])
+    pz = z_range[0] + norm_z * (z_range[1] - z_range[0])
+
+    # 賦予 3D 空間立體飽滿厚度 (Y軸)
+    cx_mid = (min_c + max_c) / 2.0
+    rel_x = 1.0 - np.clip(np.abs(sampled[:, 1] - cx_mid) / (range_c / 2.0), 0.0, 1.0)
+    y_spread = np.sqrt(np.maximum(rel_x, 0.05)) * thickness
+    py = y_center + (np.random.rand(n) - 0.5) * y_spread * 2.0
+
+    coords_3d = np.column_stack([px, py, pz])
+
+    colors = []
+    if has_color and arr.shape[2] >= 3:
+        for r, c in sampled:
+            rv, gv, bv = arr[r, c][:3]
+            colors.append(f"#{rv:02X}{gv:02X}{bv:02X}")
+    else:
+        colors = ["#00F0FF"] * n
+
+    return coords_3d, colors
+
 # ----------------- 執行沙盒 -----------------
 def execute_generated_code(code_str: str, drone_count: int):
     # 清除 Markdown 代碼標籤 (避免 Gemini 包裹 ```python導致語法錯誤)
@@ -624,6 +703,7 @@ def execute_generated_code(code_str: str, drone_count: int):
         "ImageDraw": ImageDraw,
         "ImageFont": ImageFont,
         "FONT_PATH": FONT_PATH,
+        "extrude_canvas_to_3d": extrude_canvas_to_3d,
         "__builtins__": __builtins__
     }
     exec(cleaned_code, scope)
