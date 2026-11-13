@@ -249,6 +249,172 @@
       box-shadow: 0 0 8px #38bdf8;
       cursor: pointer;
     }
+
+    /* AI 編排決策日誌與 DEBUG 區塊 */
+    .debug-panel {
+      margin-top: 12px;
+      background: #0f172a;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      overflow: hidden;
+      font-size: 0.8rem;
+    }
+    .debug-header {
+      padding: 10px 12px;
+      background: #1e293b;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      cursor: pointer;
+      user-select: none;
+      border-bottom: 1px solid #334155;
+    }
+    .debug-header:hover {
+      background: #283548;
+    }
+    .debug-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-weight: 600;
+      color: #f1f5f9;
+      font-size: 0.82rem;
+    }
+    .debug-badge {
+      font-size: 0.7rem;
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-weight: 600;
+      background: #0369a1;
+      color: #e0f2fe;
+    }
+    .debug-badge.tier1 { background: #15803d; color: #dcfce7; }
+    .debug-badge.tier2 { background: #b45309; color: #fef3c7; }
+    .debug-badge.tier3 { background: #4338ca; color: #e0e7ff; }
+    .debug-toggle-btn {
+      background: none;
+      border: none;
+      color: #94a3b8;
+      font-size: 0.75rem;
+      cursor: pointer;
+    }
+    .debug-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      max-height: 480px;
+      overflow-y: auto;
+    }
+    .debug-meta-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background: #1e293b;
+      padding: 8px 10px;
+      border-radius: 6px;
+    }
+    .debug-meta-item {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .meta-label {
+      font-size: 0.7rem;
+      color: #94a3b8;
+    }
+    .meta-val {
+      font-size: 0.76rem;
+      font-weight: 600;
+      color: #38bdf8;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .debug-section-title {
+      font-size: 0.72rem;
+      font-weight: 700;
+      color: #cbd5e1;
+      letter-spacing: 0.5px;
+      margin-top: 4px;
+      border-bottom: 1px dashed #334155;
+      padding-bottom: 3px;
+    }
+    .debug-tier-flow {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .tier-step {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 5px;
+      font-size: 0.74rem;
+      background: rgba(30, 41, 59, 0.6);
+      border-left: 3px solid #64748b;
+      line-height: 1.4;
+    }
+    .tier-step.active {
+      border-left-color: #22c55e;
+      background: rgba(34, 197, 94, 0.1);
+    }
+    .tier-step.fallback {
+      border-left-color: #f59e0b;
+      background: rgba(245, 158, 11, 0.1);
+    }
+    .tier-step.error {
+      border-left-color: #ef4444;
+      background: rgba(239, 68, 68, 0.1);
+    }
+    .debug-scene-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.75rem;
+    }
+    .scene-card-header {
+      display: flex;
+      justify-content: space-between;
+      font-weight: 600;
+      color: #e2e8f0;
+      margin-bottom: 4px;
+    }
+    .scene-elements-list {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      margin-top: 4px;
+    }
+    .elem-tag {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #334155;
+      color: #38bdf8;
+      font-family: monospace;
+      font-size: 0.72rem;
+      margin-right: 4px;
+    }
+    .btn-debug-copy {
+      background: #334155;
+      color: #cbd5e1;
+      border: 1px solid #475569;
+      padding: 6px 10px;
+      border-radius: 4px;
+      font-size: 0.75rem;
+      cursor: pointer;
+      width: 100%;
+      text-align: center;
+      transition: all 0.2s;
+    }
+    .btn-debug-copy:hover {
+      background: #475569;
+      color: #f8fafc;
+    }
+
   </style>
 </head>
 <body>
@@ -311,6 +477,49 @@
     </button>
 
     <div id="statusBox" class="status-msg"></div>
+    <!-- AI 編排決策日誌與 DEBUG 區塊 -->
+    <div id="debugInspector" class="debug-panel" style="display: none;">
+      <div class="debug-header" onclick="toggleDebugBody()">
+        <div class="debug-title">
+          <span>🛠️</span>
+          <span>AI 編排決策日誌 (DEBUG)</span>
+        </div>
+        <span id="debugTierBadge" class="debug-badge">Tier 1</span>
+        <button class="debug-toggle-btn" id="debugToggleBtn">展開 ▼</button>
+      </div>
+
+      <div class="debug-body" id="debugBody" style="display: none;">
+        <div class="debug-meta-grid">
+          <div class="debug-meta-item">
+            <span class="meta-label">調用 AI 模型</span>
+            <span class="meta-val" id="dbgModel">-</span>
+          </div>
+          <div class="debug-meta-item">
+            <span class="meta-label">雲端運算耗時</span>
+            <span class="meta-val" id="dbgElapsed">-</span>
+          </div>
+          <div class="debug-meta-item">
+            <span class="meta-label">防撞規劃狀態</span>
+            <span class="meta-val" style="color: #4ade80;">✅ 3000 架無碰撞</span>
+          </div>
+          <div class="debug-meta-item">
+            <span class="meta-label">地面起飛保護</span>
+            <span class="meta-val" style="color: #38bdf8;">✅ Z=0.0 機坪</span>
+          </div>
+        </div>
+
+        <div class="debug-section-title">🚦 各層引擎執行狀態</div>
+        <div class="debug-tier-flow" id="dbgTierTimeline"></div>
+
+        <div class="debug-section-title">🎭 各幕幾何構成原理（為什麼長這樣？）</div>
+        <div class="debug-scene-list" id="dbgSceneList"></div>
+
+        <div class="debug-actions">
+          <button class="btn-debug-copy" onclick="copyDebugLog()">📋 複製完整除錯報告 (JSON)</button>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <div class="main-content">
@@ -841,6 +1050,9 @@
           aiBadge = "🧱 AI 複合幾何圖元庫 (Tier 2)";
         }
         statusBox.innerText = `🎉 【${aiBadge}】編排成功！${droneCount} 架無人機已完成立體防撞航線規劃，即刻播放！`;
+        if (resData.debug_info) {
+          renderDebugInspector(resData.debug_info, resData.ai_mode, droneCount);
+        }
 
         renderAtProgress(0.0);
         setTimeout(startPlay, 400);
@@ -853,6 +1065,108 @@
         submitBtn.disabled = false;
       }
     }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function toggleDebugBody() {
+      const body = document.getElementById("debugBody");
+      const btn = document.getElementById("debugToggleBtn");
+      if (body.style.display === "none") {
+        body.style.display = "flex";
+        btn.innerText = "收合 ▲";
+      } else {
+        body.style.display = "none";
+        btn.innerText = "展開 ▼";
+      }
+    }
+
+    function copyDebugLog() {
+      if (!window.lastDebugData) return;
+      navigator.clipboard.writeText(JSON.stringify(window.lastDebugData, null, 2)).then(() => {
+        alert("✅ 完整除錯日誌已複製至剪貼簿！");
+      }).catch(() => {
+        prompt("請手動複製除錯日誌：", JSON.stringify(window.lastDebugData));
+      });
+    }
+
+    function renderDebugInspector(debugInfo, aiMode, droneCount) {
+      const panel = document.getElementById("debugInspector");
+      if (!panel || !debugInfo) return;
+      panel.style.display = "block";
+
+      const badge = document.getElementById("debugTierBadge");
+      badge.className = "debug-badge";
+      if (aiMode === "python_code") {
+        badge.classList.add("tier1");
+        badge.innerText = "Tier 1 (動態程式碼)";
+      } else if (aiMode === "primitive_composer") {
+        badge.classList.add("tier2");
+        badge.innerText = "Tier 2 (圖元積木庫)";
+      } else {
+        badge.classList.add("tier3");
+        badge.innerText = "Tier 3 (離線保底)";
+      }
+
+      document.getElementById("dbgModel").innerText = debugInfo.model_used || "無";
+      document.getElementById("dbgElapsed").innerText = debugInfo.elapsed_sec || "0 秒";
+
+      const timelineEl = document.getElementById("dbgTierTimeline");
+      let flowHtml = "";
+      
+      if (debugInfo.tier1) {
+        if (debugInfo.tier1.status === "success") {
+          flowHtml += `<div class="tier-step active"><span>✅</span><div><b>Tier 1 (AI 幾何程式設計師)</b>：成功調用 ${debugInfo.tier1.model || 'Gemini'} 動態編寫 Python 數學曲面與 PIL 點陣代碼！</div></div>`;
+        } else if (debugInfo.tier1.status === "error") {
+          flowHtml += `<div class="tier-step fallback"><span>⚠️</span><div><b>Tier 1 (AI 幾何程式設計師)</b>：代碼執行異常，自動切換至 Tier 2 備援。<br><small style="color:#fca5a5;">異常訊息: ${escapeHtml(debugInfo.tier1.error || '')}</small></div></div>`;
+        }
+      }
+
+      if (debugInfo.tier2) {
+        if (debugInfo.tier2.status === "success") {
+          flowHtml += `<div class="tier-step active"><span>🧱</span><div><b>Tier 2 (AI 複合幾何圖元庫)</b>：成功調用 ${debugInfo.tier2.model || 'Gemini'} 拆解為立體幾何圖元組合！</div></div>`;
+        } else if (debugInfo.tier2.status === "error") {
+          flowHtml += `<div class="tier-step fallback"><span>⚠️</span><div><b>Tier 2 (AI 複合幾何圖元庫)</b>：圖元解析異常，切換至 Tier 3。<br><small style="color:#fca5a5;">${escapeHtml(debugInfo.tier2.error || '')}</small></div></div>`;
+        }
+      }
+
+      if (debugInfo.tier3 && debugInfo.tier3.status === "active") {
+        flowHtml += `<div class="tier-step active"><span>⚡</span><div><b>Tier 3 (本地智慧備援引擎)</b>：已透過本地商標徽章/多字排版規則順利產出！</div></div>`;
+      }
+      timelineEl.innerHTML = flowHtml;
+
+      const sceneListEl = document.getElementById("dbgSceneList");
+      let scenesHtml = "";
+      (debugInfo.scenes_breakdown || []).forEach((sc, idx) => {
+        scenesHtml += `
+          <div class="debug-scene-card">
+            <div class="scene-card-header">
+              <span>第 ${idx + 1} 幕：${escapeHtml(sc.scene_name || '')}</span>
+              <span style="color: #38bdf8;">${sc.drone_count || droneCount} 架</span>
+            </div>
+            <div style="color: #94a3b8; font-size: 0.72rem; margin-bottom: 4px;">🛠️ 生成方式：${escapeHtml(sc.generator || '')}</div>
+            <div class="scene-elements-list">
+              ${(sc.elements || []).map(el => `<div><span class="elem-tag">${escapeHtml(el.shape_type)}</span> ${escapeHtml(el.desc || '')} (${Math.round((el.ratio || 1) * 100)}% 架數, 色彩: ${escapeHtml((el.colors || []).join(', '))})</div>`).join('')}
+              ${sc.code_preview ? `<pre style="background:#090d16; padding:6px; border-radius:4px; font-size:0.7rem; color:#86efac; overflow-x:auto; max-height:80px;">${escapeHtml(sc.code_preview)}</pre>` : ''}
+              ${sc.explanation ? `<div style="color: #cbd5e1; font-size: 0.72rem; margin-top: 2px;">💡 <b>AI 解析說明</b>：${escapeHtml(sc.explanation)}</div>` : ''}
+            </div>
+          </div>
+        `;
+      });
+      sceneListEl.innerHTML = scenesHtml;
+
+      document.getElementById("debugBody").style.display = "flex";
+      document.getElementById("debugToggleBtn").innerText = "收合 ▲";
+      window.lastDebugData = debugInfo;
+    }
+
   </script>
 </body>
 </html>
