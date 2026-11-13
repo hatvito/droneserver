@@ -57,7 +57,7 @@ def test_ai():
         return {"status": "error", "message": "GEMINI_API_KEY is not set"}
     
     results = {}
-    http_opts = types.HttpOptions(timeout=6000)
+    http_opts = types.HttpOptions(timeout=15000)
     client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
     
     available_models = []
@@ -810,7 +810,7 @@ async def generate_show(req: ShowRequest):
         # =================================================================
         if GEMINI_API_KEY:
             try:
-                http_opts = types.HttpOptions(timeout=7000)
+                http_opts = types.HttpOptions(timeout=20000)
                 client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
                 code_resp = None
                 for m in candidate_models:
@@ -854,7 +854,7 @@ async def generate_show(req: ShowRequest):
         # =================================================================
         if ai_mode == "none" and GEMINI_API_KEY:
             try:
-                http_opts = types.HttpOptions(timeout=7000)
+                http_opts = types.HttpOptions(timeout=20000)
                 client = genai.Client(api_key=GEMINI_API_KEY, http_options=http_opts)
                 prim_resp = None
                 for m in candidate_models:
