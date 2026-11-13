@@ -617,7 +617,7 @@
 
     <div class="form-group">
       <label>🎯 軌跡追蹤指定 (輸入 1 或 1,5,10 或 1-10 或 all)</label>
-      <input type="text" id="trackDroneInput" value="all" onchange="renderAtProgress(currentGlobalProgress)" />
+      <input type="text" id="trackDroneInput" value="all" onchange="renderAtTime(currentShowTime)" />
     </div>
 
     <div class="form-group">
@@ -728,11 +728,147 @@
     let customImageScenes = {};
     let isPlaying = false;
     let showTrails = true;
-    let currentGlobalProgress = 0.0;
-    const TRANSITION_SECONDS = 3.5;
-    const DWELL_SECONDS = 2.0;
+    let currentShowTime = 0.0;
+    let totalShowDuration = 0.0;
+    let timelineSchedule = [];
+    const TRANSITION_DURATION = 4.5;
     let lastTimestamp = null;
     let animationFrameId = null;
+    let playTimeoutId = null;
+
+    function formatTime(sec) {
+      const s = Math.max(0, Math.floor(sec));
+      const m = Math.floor(s / 60);
+      const remS = s % 60;
+      return `${m.toString().padStart(2, '0')}:${remS.toString().padStart(2, '0')}`;
+    }
+
+    function parseHoldSeconds(text, promptText) {
+      if (!text) text = "";
+      const tClean = text.trim();
+      if (tClean.includes("一分鐘")) return 60.0;
+      if (tClean.includes("半分鐘")) return 30.0;
+
+      const mNum = tClean.match(/(?:停|停留|維持|展示|表演|持續|保持|停頓|定點)?\s*(\d+(?:\.\d+)?)\s*(?:秒|s|sec|seconds?)/i);
+      if (mNum) return Math.max(2.0, Math.min(parseFloat(mNum[1]), 180.0));
+
+      const cnNums = {
+        "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5,
+        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+        "十一": 11, "十二": 12, "十三": 13, "十四": 14, "十五": 15,
+        "十六": 16, "十七": 17, "十八": 18, "十九": 19,
+        "二十": 20, "二十一": 21, "二十二": 22, "二十三": 23, "二十四": 24, "二十五": 25,
+        "二十六": 26, "二十七": 27, "二十八": 28, "二十九": 29,
+        "三十": 30, "三十五": 35, "四十": 40, "四十五": 45, "五十": 50, "六十": 60
+      };
+      const mCn = tClean.match(/(?:停|停留|維持|展示|表演|持續|保持|停頓|定點)?\s*([零一二兩三四五六七八九十百]+)\s*秒/);
+      if (mCn) {
+        const w = mCn[1].trim();
+        if (cnNums[w]) return cnNums[w];
+        if (w.startsWith("三十")) return 30.0 + (cnNums[w.slice(2)] || 0);
+        if (w.startsWith("二十")) return 20.0 + (cnNums[w.slice(2)] || 0);
+        if (w.startsWith("四十")) return 40.0 + (cnNums[w.slice(2)] || 0);
+        if (w.startsWith("五十")) return 50.0 + (cnNums[w.slice(2)] || 0);
+        if (w.startsWith("十")) return 10.0 + (cnNums[w.slice(1)] || 0);
+      }
+
+      if (promptText) {
+        const lines = promptText.split("\n").map(l => l.trim()).filter(Boolean);
+        for (let line of lines) {
+          for (let i = 0; i < tClean.length - 1; i++) {
+            const bi = tClean.substring(i, i + 2);
+            if (line.includes(bi)) {
+              const lineHold = parseHoldSeconds(line, "");
+              if (lineHold !== 6.0 && lineHold !== 4.0) return lineHold;
+            }
+          }
+        }
+      }
+
+      if (tClean.includes("地面") || tClean.includes("起飛") || tClean.includes("停機") || tClean.includes("待命")) {
+        return 4.0;
+      }
+      return 6.0;
+    }
+
+    function buildTimelineSchedule(scenes) {
+      timelineSchedule = [];
+      let accum = 0.0;
+      if (!scenes || scenes.length === 0) {
+        totalShowDuration = 1.0;
+        return timelineSchedule;
+      }
+
+      for (let i = 0; i < scenes.length; i++) {
+        const sc = scenes[i];
+        let holdSec = parseFloat(sc.hold_seconds);
+        if (isNaN(holdSec) || holdSec <= 0) {
+          holdSec = (i === 0) ? 4.0 : 6.0;
+        }
+
+        // 1. Dwell Phase (定點懸停展示)
+        timelineSchedule.push({
+          type: "dwell",
+          sceneIndex: i,
+          sceneName: sc.name || `第 ${i + 1} 幕`,
+          startTime: accum,
+          duration: holdSec,
+          endTime: accum + holdSec
+        });
+        accum += holdSec;
+
+        // 2. Transition Phase (立體防撞變形過渡)
+        if (i < scenes.length - 1) {
+          timelineSchedule.push({
+            type: "transition",
+            fromIndex: i,
+            toIndex: i + 1,
+            fromName: sc.name || `第 ${i + 1} 幕`,
+            toName: scenes[i + 1].name || `第 ${i + 2} 幕`,
+            startTime: accum,
+            duration: TRANSITION_DURATION,
+            endTime: accum + TRANSITION_DURATION
+          });
+          accum += TRANSITION_DURATION;
+        }
+      }
+
+      totalShowDuration = Math.max(accum, 1.0);
+      return timelineSchedule;
+    }
+
+    function getTimelineState(time) {
+      const clamped = Math.max(0, Math.min(time, totalShowDuration));
+      if (!timelineSchedule || timelineSchedule.length === 0) {
+        return null;
+      }
+
+      for (let i = 0; i < timelineSchedule.length; i++) {
+        const seg = timelineSchedule[i];
+        if (clamped >= seg.startTime && (clamped <= seg.endTime || i === timelineSchedule.length - 1)) {
+          const segElapsed = clamped - seg.startTime;
+          const segRemaining = Math.max(0, seg.endTime - clamped);
+          const segProgress = seg.duration > 0 ? Math.min(1.0, segElapsed / seg.duration) : 1.0;
+          return {
+            seg,
+            segElapsed,
+            segRemaining,
+            segProgress,
+            time: clamped,
+            globalRatio: totalShowDuration > 0 ? clamped / totalShowDuration : 0
+          };
+        }
+      }
+      const lastSeg = timelineSchedule[timelineSchedule.length - 1];
+      return {
+        seg: lastSeg,
+        segElapsed: lastSeg.duration,
+        segRemaining: 0,
+        segProgress: 1.0,
+        time: clamped,
+        globalRatio: 1.0
+      };
+    }
 
     function initPlotly() {
       const layout = {
@@ -855,46 +991,52 @@
         btn.classList.remove("active");
         Plotly.restyle("plot-area", { x: [[0]], y: [[4]], z: [[0]] }, [0]);
       }
-      renderAtProgress(currentGlobalProgress);
+      renderAtTime(currentShowTime);
     }
 
-    function updateHUD(sceneIdx, isArrived) {
-      const hud = document.getElementById("sceneHud");
-      const title = document.getElementById("hudTitle");
-      const badge = document.getElementById("hudBadge");
-      
-      if (!showScenes || showScenes.length === 0) {
-        hud.style.display = "none";
-        return;
-      }
-
-      hud.style.display = "flex";
-      const scene = showScenes[sceneIdx] || showScenes[0] || {};
-      title.innerText = `第 ${sceneIdx + 1} 幕：${scene.name || "隊形變換"}`;
-      
-      if (isArrived) {
-        badge.innerText = "✓ 已就定位";
-        badge.style.background = "#16a34a";
-      } else {
-        badge.innerText = "✈ 立體防撞過渡中...";
-        badge.style.background = "#0284c7";
-      }
-    }
-
-    function renderAtProgress(progress) {
+        function renderAtTime(time) {
       if (!showScenes || showScenes.length === 0) return;
 
-      const numScenes = showScenes.length;
-      if (numScenes === 1) {
-        const singleScene = showScenes[0] || {};
-        const pts = singleScene.points || [];
-        const trackedSet = getTrackedDroneSet(pts.length);
-        const curX = [], curY = [], curZ = [], curColors = [], curSizes = [];
-        for (let i = 0; i < pts.length; i++) {
+      const state = getTimelineState(time);
+      if (!state) return;
+
+      const seg = state.seg;
+      const slider = document.getElementById("timelineSlider");
+      slider.value = state.globalRatio * 1000;
+
+      const curProgText = document.getElementById("curProgressText");
+      const totalScenesText = document.getElementById("totalScenesText");
+      totalScenesText.innerText = `${formatTime(state.time)} / ${formatTime(totalShowDuration)} (共 ${showScenes.length} 幕)`;
+
+      const hud = document.getElementById("sceneHud");
+      const hudTitle = document.getElementById("hudTitle");
+      const hudBadge = document.getElementById("hudBadge");
+      hud.style.display = "flex";
+
+      if (seg.type === "dwell") {
+        const sIdx = seg.sceneIndex;
+        const scene = showScenes[sIdx] || {};
+        const pts = scene.points || [];
+        const droneCount = pts.length;
+        const trackedSet = getTrackedDroneSet(droneCount);
+
+        const isGround = (sIdx === 0 && pts.length > 0 && pts[0].z <= 0.05);
+
+        const curX = [];
+        const curY = [];
+        const curZ = [];
+        const curColors = [];
+        const curSizes = [];
+
+        for (let i = 0; i < droneCount; i++) {
           const p = pts[i];
+          const hoverY = isGround ? 0.0 : Math.sin(time * 2.2 + i * 0.12) * 0.025;
+          const hoverZ = isGround ? 0.0 : Math.cos(time * 1.8 + i * 0.15) * 0.02;
+
           curX.push(p.x);
-          curY.push(p.y);
-          curZ.push(p.z);
+          curY.push(p.y + hoverY);
+          curZ.push(p.z + hoverZ);
+
           const isTracked = (trackedSet === null || trackedSet.has(i));
           if (trackedSet !== null && isTracked) {
             curColors.push("#FF0055");
@@ -907,112 +1049,113 @@
             curSizes.push(3.5);
           }
         }
-        Plotly.restyle("plot-area", { x: [[0]], y: [[4]], z: [[0]] }, [0]);
-        Plotly.restyle("plot-area", {
-          x: [curX], y: [curY], z: [curZ],
-          "marker.color": [curColors],
-          "marker.size": [curSizes]
-        }, [1]);
-        document.getElementById("timelineSlider").value = 0;
-        document.getElementById("curProgressText").innerText = `第 1 幕 (100%)`;
-        updateHUD(0, true);
-        return;
-      }
 
-      const totalTransitions = numScenes - 1;
-      const clampedProg = Math.max(0, Math.min(progress, totalTransitions));
+        try {
+          Plotly.restyle("plot-area", {
+            x: [[0]], y: [[4]], z: [[0]]
+          }, [0]);
 
-      const fromIdx = Math.min(Math.floor(clampedProg), numScenes - 1);
-      const toIdx = Math.min(fromIdx + 1, numScenes - 1);
-      const t = clampedProg - fromIdx;
-
-      const fromScene = showScenes[fromIdx] || showScenes[0] || {};
-      const toScene = showScenes[toIdx] || fromScene;
-      const fromPts = fromScene.points || [];
-      const toPts = toScene.points || [];
-      const droneCount = Math.min(fromPts.length, toPts.length);
-
-      const trackedSet = getTrackedDroneSet(droneCount);
-
-      const curX = [];
-      const curY = [];
-      const curZ = [];
-      const curColors = [];
-      const curSizes = [];
-
-      const trajX = [];
-      const trajY = [];
-      const trajZ = [];
-
-      const smoothT = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
-      const isArrived = (t === 0.0 || t >= 0.98);
-      const arcFactor = Math.sin(t * Math.PI);
-
-      for (let i = 0; i < droneCount; i++) {
-        const fp = fromPts[i];
-        const tp = toPts[i];
-
-        const x = fp.x + (tp.x - fp.x) * smoothT;
-        const z = fp.z + (tp.z - fp.z) * smoothT;
-
-        const directionSign = (tp.x >= fp.x) ? 1.0 : -1.0;
-        const indexOffset = ((i % 5) - 2) * 0.25;
-        const yBypass = (directionSign * 0.8 + indexOffset) * arcFactor;
-
-        const baseY = fp.y + (tp.y - fp.y) * smoothT;
-        const y = baseY + (isArrived ? 0.0 : yBypass);
-
-        curX.push(x);
-        curY.push(y);
-        curZ.push(z);
-
-        const isTracked = (trackedSet === null || trackedSet.has(i));
-        
-        if (trackedSet !== null && isTracked) {
-          curColors.push("#FF0055");
-          curSizes.push(5.5);
-        } else if (trackedSet !== null && !isTracked) {
-          curColors.push("rgba(148, 163, 184, 0.35)");
-          curSizes.push(2.5);
-        } else {
-          curColors.push(t < 0.5 ? (fp.color || "#38bdf8") : (tp.color || "#38bdf8"));
-          curSizes.push(3.5);
+          Plotly.restyle("plot-area", {
+            x: [curX], y: [curY], z: [curZ],
+            "marker.color": [curColors],
+            "marker.size": [curSizes]
+          }, [1]);
+        } catch (e) {
+          console.error("Restyle error:", e);
         }
 
-        if (showTrails && !isArrived && isTracked) {
-          const midY = (fp.y + tp.y) / 2.0 + (directionSign * 0.8 + indexOffset);
-          trajX.push(fp.x, (fp.x + tp.x) / 2.0, tp.x, null);
-          trajY.push(fp.y, midY, tp.y, null);
-          trajZ.push(fp.z, (fp.z + tp.z) / 2.0, tp.z, null);
+        hudTitle.innerText = `第 ${sIdx + 1} 幕：${seg.sceneName}`;
+        hudBadge.innerText = `✨ 定點懸停 ${state.segRemaining.toFixed(1)}s`;
+        hudBadge.style.background = "#16a34a";
+
+        curProgText.innerText = `第 ${sIdx + 1} 幕 (定點懸停展示中)`;
+
+      } else if (seg.type === "transition") {
+        const fromIdx = seg.fromIndex;
+        const toIdx = seg.toIndex;
+        const fromScene = showScenes[fromIdx] || {};
+        const toScene = showScenes[toIdx] || fromScene;
+        const fromPts = fromScene.points || [];
+        const toPts = toScene.points || [];
+        const droneCount = Math.min(fromPts.length, toPts.length);
+        const trackedSet = getTrackedDroneSet(droneCount);
+
+        const t = state.segProgress;
+        const smoothT = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+        const arcFactor = Math.sin(t * Math.PI);
+
+        const curX = [];
+        const curY = [];
+        const curZ = [];
+        const curColors = [];
+        const curSizes = [];
+
+        const trajX = [];
+        const trajY = [];
+        const trajZ = [];
+
+        for (let i = 0; i < droneCount; i++) {
+          const fp = fromPts[i];
+          const tp = toPts[i];
+
+          const x = fp.x + (tp.x - fp.x) * smoothT;
+          const z = fp.z + (tp.z - fp.z) * smoothT;
+
+          const directionSign = (tp.x >= fp.x) ? 1.0 : -1.0;
+          const indexOffset = ((i % 5) - 2) * 0.25;
+          const yBypass = (directionSign * 0.8 + indexOffset) * arcFactor;
+
+          const baseY = fp.y + (tp.y - fp.y) * smoothT;
+          const y = baseY + yBypass;
+
+          curX.push(x);
+          curY.push(y);
+          curZ.push(z);
+
+          const isTracked = (trackedSet === null || trackedSet.has(i));
+          if (trackedSet !== null && isTracked) {
+            curColors.push("#FF0055");
+            curSizes.push(5.5);
+          } else if (trackedSet !== null && !isTracked) {
+            curColors.push("rgba(148, 163, 184, 0.35)");
+            curSizes.push(2.5);
+          } else {
+            curColors.push(t < 0.5 ? (fp.color || "#38bdf8") : (tp.color || "#38bdf8"));
+            curSizes.push(3.5);
+          }
+
+          if (showTrails && isTracked) {
+            const midY = (fp.y + tp.y) / 2.0 + (directionSign * 0.8 + indexOffset);
+            trajX.push(fp.x, (fp.x + tp.x) / 2.0, tp.x, null);
+            trajY.push(fp.y, midY, tp.y, null);
+            trajZ.push(fp.z, (fp.z + tp.z) / 2.0, tp.z, null);
+          }
         }
+
+        try {
+          Plotly.restyle("plot-area", {
+            x: [trajX.length > 0 ? trajX : [0]],
+            y: [trajY.length > 0 ? trajY : [4]],
+            z: [trajZ.length > 0 ? trajZ : [0]],
+            "line.color": trackedSet !== null ? "#FF0055" : "rgba(56, 189, 248, 0.35)",
+            "line.width": trackedSet !== null ? 2.8 : 1.2
+          }, [0]);
+
+          Plotly.restyle("plot-area", {
+            x: [curX], y: [curY], z: [curZ],
+            "marker.color": [curColors],
+            "marker.size": [curSizes]
+          }, [1]);
+        } catch (e) {
+          console.error("Restyle error:", e);
+        }
+
+        hudTitle.innerText = `第 ${fromIdx + 1} ➔ 第 ${toIdx + 1} 幕：${seg.toName}`;
+        hudBadge.innerText = `✈ 3D航線變形 ${state.segRemaining.toFixed(1)}s`;
+        hudBadge.style.background = "#0284c7";
+
+        curProgText.innerText = `第 ${fromIdx + 1} ➔ ${toIdx + 1} 幕 (3D立體防撞變形中)`;
       }
-
-      try {
-        Plotly.restyle("plot-area", {
-          x: [trajX.length > 0 ? trajX : [0]],
-          y: [trajY.length > 0 ? trajY : [4]],
-          z: [trajZ.length > 0 ? trajZ : [0]],
-          "line.color": trackedSet !== null ? "#FF0055" : "rgba(56, 189, 248, 0.35)",
-          "line.width": trackedSet !== null ? 2.8 : 1.2
-        }, [0]);
-
-        Plotly.restyle("plot-area", {
-          x: [curX],
-          y: [curY],
-          z: [curZ],
-          "marker.color": [curColors],
-          "marker.size": [curSizes]
-        }, [1]);
-      } catch (e) {
-        console.error("Restyle error:", e);
-      }
-
-      const slider = document.getElementById("timelineSlider");
-      slider.value = (clampedProg / totalTransitions) * 1000;
-      
-      const activeSceneIdx = t >= 0.98 ? toIdx : fromIdx;
-      document.getElementById("curProgressText").innerText = `第 ${activeSceneIdx + 1} 幕 (${Math.round((clampedProg / totalTransitions) * 100)}%)`;
-      updateHUD(activeSceneIdx, isArrived);
     }
 
     function animationLoop(timestamp) {
@@ -1022,19 +1165,17 @@
       const dt = (timestamp - lastTimestamp) / 1000.0;
       lastTimestamp = timestamp;
 
-      const totalTransitions = Math.max(1, showScenes.length - 1);
-      const speed = 1.0 / (TRANSITION_SECONDS + DWELL_SECONDS);
+      const safeDt = Math.min(dt, 0.1);
+      currentShowTime += safeDt;
 
-      currentGlobalProgress += dt * speed * totalTransitions;
-
-      if (currentGlobalProgress >= totalTransitions) {
-        currentGlobalProgress = totalTransitions;
-        renderAtProgress(currentGlobalProgress);
+      if (currentShowTime >= totalShowDuration) {
+        currentShowTime = totalShowDuration;
+        renderAtTime(currentShowTime);
         pausePlay();
         return;
       }
 
-      renderAtProgress(currentGlobalProgress);
+      renderAtTime(currentShowTime);
       animationFrameId = requestAnimationFrame(animationLoop);
     }
 
@@ -1048,13 +1189,8 @@
 
     function startPlay() {
       if (!showScenes || showScenes.length === 0) return;
-      if (showScenes.length <= 1) {
-        currentGlobalProgress = 0.0;
-        renderAtProgress(0.0);
-        return;
-      }
-      if (currentGlobalProgress >= showScenes.length - 1) {
-        currentGlobalProgress = 0.0;
+      if (currentShowTime >= totalShowDuration - 0.05) {
+        currentShowTime = 0.0;
       }
       isPlaying = true;
       lastTimestamp = null;
@@ -1069,6 +1205,10 @@
         cancelAnimationFrame(animationFrameId);
         animationFrameId = null;
       }
+      if (playTimeoutId) {
+        clearTimeout(playTimeoutId);
+        playTimeoutId = null;
+      }
       document.getElementById("playBtn").innerText = "▶ 播放大秀";
       document.getElementById("playBtn").classList.remove("active");
     }
@@ -1076,9 +1216,8 @@
     function onSliderDrag(val) {
       if (!showScenes || showScenes.length === 0) return;
       pausePlay();
-      const totalTransitions = Math.max(1, showScenes.length - 1);
-      currentGlobalProgress = (val / 1000.0) * totalTransitions;
-      renderAtProgress(currentGlobalProgress);
+      currentShowTime = (val / 1000.0) * totalShowDuration;
+      renderAtTime(currentShowTime);
     }
 
     async function convertAndInsertImage() {
@@ -1200,6 +1339,14 @@
 
         showScenes = showData.scenes;
 
+        // 確保每一幕皆帶有精確停留時間 (若後端未附則即時解析)
+        showScenes.forEach((scene, sIdx) => {
+          if (!scene) return;
+          if (typeof scene.hold_seconds === "undefined" || scene.hold_seconds === null) {
+            scene.hold_seconds = parseHoldSeconds(scene.name || "", prompt);
+          }
+        });
+
         for (let scene of showScenes) {
           if (!scene) continue;
           for (let [imgKey, pts] of Object.entries(customImageScenes)) {
@@ -1217,8 +1364,9 @@
           }
         }
 
-        currentGlobalProgress = 0.0;
-        document.getElementById("totalScenesText").innerText = `共 ${showScenes.length} 幕`;
+        buildTimelineSchedule(showScenes);
+        currentShowTime = 0.0;
+        document.getElementById("totalScenesText").innerText = `${formatTime(0)} / ${formatTime(totalShowDuration)} (共 ${showScenes.length} 幕)`;
         
         statusBox.className = "status-msg success";
         let aiBadge = "⚡ 智慧幾何備援引擎";
@@ -1232,7 +1380,7 @@
           renderDebugInspector(resData.debug_info, resData.ai_mode, droneCount);
         }
 
-        renderAtProgress(0.0);
+        renderAtTime(0.0);
         setTimeout(startPlay, 400);
 
       } catch (err) {
@@ -1329,6 +1477,7 @@
               <span>第 ${idx + 1} 幕：${escapeHtml(sc.scene_name || '')}</span>
               <span style="color: #38bdf8;">${sc.drone_count || droneCount} 架</span>
             </div>
+            <div style="color: #34d399; font-size: 0.72rem; margin-bottom: 2px;">⏱️ 懸停展示時間：<b>${sc.hold_seconds || (idx === 0 ? 4 : 6)} 秒</b></div>
             <div style="color: #94a3b8; font-size: 0.72rem; margin-bottom: 4px;">🛠️ 生成方式：${escapeHtml(sc.generator || '')}</div>
             <div class="scene-elements-list">
               ${(sc.elements || []).map(el => `<div><span class="elem-tag">${escapeHtml(el.shape_type)}</span> ${escapeHtml(el.desc || '')} (${Math.round((el.ratio || 1) * 100)}% 架數, 色彩: ${escapeHtml((el.colors || []).join(', '))})</div>`).join('')}

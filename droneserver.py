@@ -521,6 +521,93 @@ def image_to_drone_points(image_bytes: bytes, total_n: int, mode: str = "pixel")
             pts.append({"x": px, "y": py, "z": pz, "color": "#00F0FF"})
         return pts
 
+# ----------------- 時間解析工具 -----------------
+def parse_scene_duration(text: str) -> float:
+    if not text:
+        return 6.0
+    text_clean = str(text)
+
+    # 0. 特殊口語詞彙
+    if "一分鐘" in text_clean:
+        return 60.0
+    if "半分鐘" in text_clean:
+        return 30.0
+
+    # 1. 搜尋阿拉伯數字：如 10秒, 30秒, 5s, 15 sec, 20seconds
+    m_num = re.search(r'(?:停|停留|維持|展示|表演|持續|保持|停頓|定點)?\s*(\d+(?:\.\d+)?)\s*(?:秒|s|sec|seconds?)', text_clean, re.I)
+    if m_num:
+        val = float(m_num.group(1))
+        return max(2.0, min(val, 180.0))
+
+    # 2. 搜尋中文數字：如 停十秒, 停三十秒, 停五秒, 停留十五秒, 二十秒
+    cn_nums = {
+        "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5,
+        "六": 6, "七": 7, "八": 8, "九": 9, "十": 10,
+        "十一": 11, "十二": 12, "十三": 13, "十四": 14, "十五": 15,
+        "十六": 16, "十七": 17, "十八": 18, "十九": 19,
+        "二十": 20, "二十一": 21, "二十二": 22, "二十三": 23, "二十四": 24, "二十五": 25,
+        "二十六": 26, "二十七": 27, "二十八": 28, "二十九": 29,
+        "三十": 30, "三十五": 35, "四十": 40, "四十五": 45, "五十": 50, "六十": 60
+    }
+    m_cn = re.search(r'(?:停|停留|維持|展示|表演|持續|保持|停頓|定點)?\s*([零一二兩三四五六七八九十百]+)\s*秒', text_clean)
+    if m_cn:
+        word = m_cn.group(1).strip()
+        if word in cn_nums:
+            return float(cn_nums[word])
+        if word.startswith("三十"):
+            sub = word[2:]
+            return 30.0 + float(cn_nums.get(sub, 0))
+        if word.startswith("二十"):
+            sub = word[2:]
+            return 20.0 + float(cn_nums.get(sub, 0))
+        if word.startswith("四十"):
+            sub = word[2:]
+            return 40.0 + float(cn_nums.get(sub, 0))
+        if word.startswith("五十"):
+            sub = word[2:]
+            return 50.0 + float(cn_nums.get(sub, 0))
+        if word.startswith("十"):
+            sub = word[1:]
+            return 10.0 + float(cn_nums.get(sub, 0))
+
+    if any(k in text_clean for k in ["地面", "起飛", "停機", "待命"]):
+        return 4.0
+
+    return 6.0
+
+def extract_hold_seconds_for_scene(scene_name: str, prompt_text: str, default_sec: float = 6.0) -> float:
+    # 1. 直接由場景名稱解析
+    sec = parse_scene_duration(scene_name)
+    if sec != 6.0 and sec != 4.0:
+        return sec
+
+    lines = [l.strip() for l in prompt_text.split('\n') if l.strip()]
+
+    # 2. 逐行比對 bi-gram 關鍵字
+    for line in lines:
+        line_clean = re.sub(r"^第[一二三四五六七八九十\d]+幕[：:]\s*", "", line)
+        for i in range(len(scene_name) - 1):
+            bi_gram = scene_name[i:i+2]
+            if bi_gram in line_clean:
+                line_sec = parse_scene_duration(line)
+                if line_sec != 6.0:
+                    return line_sec
+
+    # 3. 幕次比對
+    m_idx = re.search(r'第([一二三四五六七八九十\d]+)幕', scene_name)
+    if m_idx:
+        cur_num = m_idx.group(1)
+        for line in lines:
+            if f"第{cur_num}幕" in line:
+                line_sec = parse_scene_duration(line)
+                if line_sec != 6.0:
+                    return line_sec
+
+    if any(k in scene_name for k in ["地面", "起飛", "停機", "待命"]):
+        return 4.0
+
+    return default_sec
+
 # ----------------- PROMPTS 定義 -----------------
 # Tier 1: AI Python 幾何程式設計師 PROMPT
 PYTHON_DIRECTOR_PROMPT = """你是一位擁有頂尖 3D 運算圖學與數學建模能力的「無人機大秀總導演兼 Python 幾何架構師」。
@@ -547,6 +634,18 @@ PYTHON_DIRECTOR_PROMPT = """你是一位擁有頂尖 3D 運算圖學與數學建
 凡涉及具體生物、動物、角色、徽章、建築或交通工具（如：大象、老鷹、鯨魚、恐龍、蝴蝶、火箭、城堡、跑車、LOGO 標誌）：
 一律使用 PIL Image 與 ImageDraw 在 800x600 畫布上精細描繪該物體的經典外觀多邊形 (draw.polygon)、線條特徵 (draw.line)、眼睛裝飾 (draw.ellipse)，並調配豐富對比的高彩度色彩（絕不全場使用單一灰色！）：
 繪製完成後直接呼叫 `return extrude_canvas_to_3d(img, n, thickness=1.0)` 即可自動擠出具備三維厚度與鮮明色彩的 3000 架無人機！
+
+【文字排版與品牌 LOGO / 商標的嚴格規範】：
+1. 嚴禁將提示詞中的指令與修飾文字（例如「天空用藍色跟白色」、「排成」、「排好後停十秒」、「大秀開場」等）作為文字畫在畫布上！
+2. 只有當劇本明確包含引號（如「富邦悍將」、「SLHS」）或明確要求排文字（如「排成大字 富邦悍將」）時，才使用 draw.text 繪製該特定的核心文字。
+3. 若劇本要求「LOGO」、「商標」、「隊徽」、「標誌」或「圖騰」（例如「富邦LOGO」）：
+   - 絕不能只排文字，更嚴禁排指令字樣！
+   - 請以該品牌的經典幾何特徵進行向量繪圖：
+     例如「富邦LOGO」：以圓角盾牌/菱形外框 (draw.polygon 皇家藍與純白線條)，中央繪製象徵力量的對稱幾何圖騰 (draw.polygon) 與雙色對比，內外雙環立體光芒！
+     例如「校徽」或「隊徽」：繪製外圈雙同心圓光環，內部核心幾何符號，搭配高對比品牌雙色！
+
+【劇本停留時間解析規範】：
+請在輸出的每一幕 JSON 中保留使用者指定的停留時間秒數 hold_seconds（浮點數），例如「排好後停十秒」填 10.0，「停三十秒」填 30.0；若劇本未指定，預設填 6.0。
 
 【高擬真示範 1：大象 (包含背部拱起、捲曲長鼻、扇形大耳、象牙與眼睛)】：
 def generate_scene(n):
@@ -576,7 +675,8 @@ def generate_scene(n):
 {
   "scenes": [
     {
-      "scene_name": "幕名",
+      "scene_name": "幕名（如：宏偉城堡，停十秒）",
+      "hold_seconds": 10.0,
       "code": "def generate_scene(n):\n    import numpy as np\n    # 計算 coords (n, 3) 與 colors (n)\n    return coords, colors"
     }
   ]
@@ -788,7 +888,11 @@ def run_semantic_fallback(lines: List[str], drone_count: int):
             if quote_match:
                 brand_name = quote_match.group(1)
             else:
-                m_brand = re.search(r'([\u4e00-\u9fa5A-Za-z0-9]{2,6})\s*(?:的)?(?:LOGO|logo|商標|標誌|校徽)', clean_l)
+                s_brand = clean_l
+                s_brand = re.sub(r'^(?:在天空|天空|在空中|空中)\s*', '', s_brand)
+                s_brand = re.sub(r'^(?:用|以)?(?:[藍白紅白綠黃金黑青紫粉灰澄橘純\s與和跟\+、]|(?:色))+\s*', '', s_brand)
+                s_brand = re.sub(r'^(?:排成|組成|顯示|呈現|排出|展示|變成|排列為|排列成)\s*', '', s_brand)
+                m_brand = re.search(r'([\u4e00-\u9fa5A-Za-z0-9]{2,6})\s*(?:的)?(?:LOGO|logo|商標|標誌|校徽)', s_brand)
                 if m_brand:
                     brand_name = m_brand.group(1)
                 elif "富邦" in clean_l:
@@ -848,8 +952,11 @@ def run_semantic_fallback(lines: List[str], drone_count: int):
             if quote_match:
                 pure_text = quote_match.group(1)
             else:
-                cleaned = re.sub(r'^(天空用|在空中|用|以)?[\u4e00-\u9fa5\w色\s與和跟]+(排成|組成|顯示|呈現|排出|展示|變成)', '', clean_l)
+                cleaned = re.sub(r'^(?:在天空|天空|在空中|空中)\s*', '', clean_l)
+                cleaned = re.sub(r'^(?:用|以)?(?:[藍白紅白綠黃金黑青紫粉灰澄橘純\s與和跟\+、]|(?:色))+\s*', '', cleaned)
+                cleaned = re.sub(r'^(?:排成|組成|顯示|呈現|排出|展示|變成|排列為|排列成)\s*', '', cleaned)
                 cleaned = re.sub(r'(大字|字樣|圖形|形狀|圖案|樣式|造型).*$', '', cleaned)
+                cleaned = re.sub(r'(?:，|、|\s)*(?:排好後)?(?:停|停留|維持|展示|持續|保持)?\s*(?:[零一二兩三四五六七八九十\d]+)\s*(?:秒|s|sec).*$', '', cleaned)
                 pure_text = cleaned.strip()[:6] if cleaned.strip() else clean_l[:4]
             directives.append(SceneDirective(
                 scene_name=line,
@@ -861,8 +968,11 @@ def run_semantic_fallback(lines: List[str], drone_count: int):
     rendered = []
     for d in directives:
         pts = render_directive_to_points(d, drone_count)
-        rendered.append({"name": d.scene_name, "points": pts})
+        hold_sec = extract_hold_seconds_for_scene(d.scene_name, "\n".join(lines))
+        rendered.append({"name": d.scene_name, "points": pts, "hold_seconds": hold_sec})
     return rendered
+
+
 
 def ensure_ground_takeoff_directives(directives):
     def is_ground_scene(d):
@@ -902,7 +1012,10 @@ def ensure_ground_takeoff_scenes(rendered_scenes, drone_count):
     if not rendered_scenes or not any(k in rendered_scenes[0]["name"] for k in ["地面", "起飛", "停機", "跑道"]):
         pts = generate_primitive_coords("ground_grid", drone_count)
         ground_pts = [{"x": round(float(p[0]), 2), "y": round(float(p[1]), 2), "z": 0.0, "color": "#00E676" if i < drone_count//2 else "#00F0FF"} for i, p in enumerate(pts)]
-        rendered_scenes.insert(0, {"name": "第一幕：地面停機坪排列（起飛準備）", "points": ground_pts})
+        rendered_scenes.insert(0, {"name": "第一幕：地面停機坪排列（起飛準備）", "points": ground_pts, "hold_seconds": 4.0})
+    else:
+        if "hold_seconds" not in rendered_scenes[0]:
+            rendered_scenes[0]["hold_seconds"] = 4.0
 
 # ----------------- ENDPOINTS -----------------
 @app.post("/api/convert-image-to-drone")
@@ -987,13 +1100,19 @@ async def generate_show(req: ShowRequest):
                             code_str = s.get("code", "")
                             if code_str:
                                 pts = execute_generated_code(code_str, req.drone_count)
-                                rendered_scenes.append({"name": s_name, "points": pts})
+                                ai_hold = s.get("hold_seconds")
+                                if isinstance(ai_hold, (int, float)) and ai_hold >= 2.0:
+                                    hold_sec = float(ai_hold)
+                                else:
+                                    hold_sec = extract_hold_seconds_for_scene(s_name, req.prompt)
+                                rendered_scenes.append({"name": s_name, "points": pts, "hold_seconds": hold_sec})
                                 scenes_breakdown.append({
                                     "scene_name": s_name,
                                     "drone_count": len(pts),
+                                    "hold_seconds": hold_sec,
                                     "generator": "Tier 1: AI 幾何程式設計師 (Python 數學曲面與向量運算)",
                                     "code_preview": (code_str.strip()[:240] + "...") if len(code_str) > 240 else code_str.strip(),
-                                    "explanation": "由 Gemini AI 即時動態編寫 Python 幾何函數生成 3D 空間點陣與漸層色彩"
+                                    "explanation": f"由 Gemini AI 即時動態編寫 Python 幾何函數（定點懸停展示 {hold_sec} 秒）"
                                 })
 
                         if len(rendered_scenes) > 0:
@@ -1048,7 +1167,8 @@ async def generate_show(req: ShowRequest):
                         for d in directives:
                             d_obj = SceneDirective(**d) if isinstance(d, dict) else d
                             pts = render_directive_to_points(d_obj, req.drone_count)
-                            rendered_scenes.append({"name": d_obj.scene_name, "points": pts})
+                            hold_sec = extract_hold_seconds_for_scene(d_obj.scene_name, req.prompt)
+                            rendered_scenes.append({"name": d_obj.scene_name, "points": pts, "hold_seconds": hold_sec})
 
                             # 解析各圖元詳情供前端除錯面板展示
                             elem_descs = []
@@ -1067,9 +1187,10 @@ async def generate_show(req: ShowRequest):
                             scenes_breakdown.append({
                                 "scene_name": d_obj.scene_name,
                                 "drone_count": len(pts),
+                                "hold_seconds": hold_sec,
                                 "generator": "Tier 2: AI 複合幾何圖元庫 (3D 積木組合拼裝)",
                                 "elements": elem_descs,
-                                "explanation": f"AI 拆解構圖：{elem_summary}"
+                                "explanation": f"AI 拆解構圖：{elem_summary}（定點懸停展示 {hold_sec} 秒）"
                             })
 
                         if len(rendered_scenes) > 0:
@@ -1097,8 +1218,9 @@ async def generate_show(req: ShowRequest):
                 scenes_breakdown.append({
                     "scene_name": s["name"],
                     "drone_count": len(s["points"]),
+                    "hold_seconds": s.get("hold_seconds", 6.0),
                     "generator": "Tier 3: 本地離線智慧語意引擎 (保底無碰撞航線)",
-                    "explanation": "依據劇本關鍵字自動匹配專屬 3D 複合圖元與多字排版"
+                    "explanation": f"依據劇本關鍵字自動匹配專屬 3D 複合圖元（定點懸停展示 {s.get('hold_seconds', 6.0)} 秒）"
                 })
             print(f"[{req.student_name}] ⚡ Tier 3 (本地智慧語意備援引擎) 順利生成 {len(rendered_scenes)} 幕！")
 
@@ -1108,8 +1230,9 @@ async def generate_show(req: ShowRequest):
             scenes_breakdown.insert(0, {
                 "scene_name": rendered_scenes[0]["name"],
                 "drone_count": len(rendered_scenes[0]["points"]),
+                "hold_seconds": rendered_scenes[0].get("hold_seconds", 4.0),
                 "generator": "安全鐵則起飛引擎 (Ground Launchpad)",
-                "explanation": "系統防護鐵則：所有群飛開場強制於地面 Z=0.0 機坪點亮並準備升空"
+                "explanation": "系統防護鐵則：所有群飛開場強制於地面 Z=0.0 機坪點亮並準備升空 (4.0 秒)"
             })
 
         elapsed_sec = round(time.time() - t_start, 2)
