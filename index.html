@@ -846,7 +846,8 @@
         document.getElementById("totalScenesText").innerText = `共 ${showScenes.length} 幕`;
         
         statusBox.className = "status-msg success";
-        statusBox.innerText = `🎉 生成成功！${droneCount} 架無人機已完成立體防撞航線規劃，即刻播放！`;
+        const aiBadge = resData.ai_mode === "gemini" ? "🤖 Gemini AI 導演" : "⚡ 智慧幾何備援引擎";
+        statusBox.innerText = `🎉 【${aiBadge}】編排成功！${droneCount} 架無人機已完成立體防撞航線規劃，即刻播放！`;
 
         renderAtProgress(0.0);
         playTimeoutId = setTimeout(startPlay, 400);
