@@ -604,6 +604,16 @@ CREATIVE_DIRECTOR_PROMPT = """你是一位完全解鎖想像力的 3D 無人機�
 
 # ----------------- 執行沙盒 -----------------
 def execute_generated_code(code_str: str, drone_count: int):
+    # 清除 Markdown 代碼標籤 (避免 Gemini 包裹 ```python導致語法錯誤)
+    cleaned_code = code_str.strip()
+    if cleaned_code.startswith("```python"):
+        cleaned_code = cleaned_code[9:]
+    elif cleaned_code.startswith("```"):
+        cleaned_code = cleaned_code[3:]
+    if cleaned_code.endswith("```"):
+        cleaned_code = cleaned_code[:-3]
+    cleaned_code = cleaned_code.strip()
+
     scope = {
         "np": np,
         "numpy": np,
@@ -612,9 +622,10 @@ def execute_generated_code(code_str: str, drone_count: int):
         "Image": Image,
         "ImageDraw": ImageDraw,
         "ImageFont": ImageFont,
-        "FONT_PATH": FONT_PATH
+        "FONT_PATH": FONT_PATH,
+        "__builtins__": __builtins__
     }
-    exec(code_str, scope)
+    exec(cleaned_code, scope)
     fn = scope.get("generate_scene") or scope.get("generate_points") or scope.get("main")
     if not fn:
         for k, v in scope.items():
@@ -624,7 +635,11 @@ def execute_generated_code(code_str: str, drone_count: int):
     if not fn:
         raise ValueError("Code does not define generate_scene function")
 
-    res = fn(drone_count)
+    try:
+        res = fn(drone_count)
+    except TypeError:
+        res = fn()
+
     if isinstance(res, tuple) and len(res) >= 2:
         coords, colors = res[0], res[1]
     elif isinstance(res, np.ndarray):
@@ -632,15 +647,29 @@ def execute_generated_code(code_str: str, drone_count: int):
         colors = ["#00F0FF"] * len(coords)
     elif isinstance(res, list) and len(res) > 0 and isinstance(res[0], dict):
         return res[:drone_count]
+    elif isinstance(res, list):
+        coords = res
+        colors = ["#00F0FF"] * len(coords)
     else:
-        raise ValueError("Invalid return type from generated function")
+        raise ValueError(f"Invalid return type from generated function: {type(res)}")
 
     coords = np.array(coords, dtype=float)
+    if coords.ndim == 2 and coords.shape[0] == 3 and coords.shape[1] != 3:
+        coords = coords.T
+    coords = np.nan_to_num(coords, nan=0.0, posinf=5.0, neginf=-5.0)
+
     if len(coords) < drone_count:
         rep = (drone_count // len(coords)) + 1
         coords = np.tile(coords, (rep, 1))[:drone_count]
     else:
         coords = coords[:drone_count]
+
+    if isinstance(colors, str):
+        colors = [colors] * drone_count
+    elif isinstance(colors, np.ndarray):
+        colors = list(colors)
+    elif not isinstance(colors, list):
+        colors = ["#00F0FF"] * drone_count
 
     points = []
     for i in range(drone_count):
@@ -864,7 +893,12 @@ async def generate_show(req: ShowRequest):
                         continue
 
                 if code_resp and code_resp.text:
-                    parsed_json = json.loads(code_resp.text.strip())
+                    tier1_info["raw_text"] = code_resp.text.strip()
+                    clean_t1 = code_resp.text.strip()
+                    if clean_t1.startswith("```json"): clean_t1 = clean_t1[7:]
+                    elif clean_t1.startswith("```"): clean_t1 = clean_t1[3:]
+                    if clean_t1.endswith("```"): clean_t1 = clean_t1[:-3]
+                    parsed_json = json.loads(clean_t1.strip())
                     code_scenes = parsed_json.get("scenes", [])
                     if code_scenes:
                         for s in code_scenes:
@@ -922,7 +956,12 @@ async def generate_show(req: ShowRequest):
                         continue
 
                 if prim_resp and prim_resp.text:
-                    director_data = json.loads(prim_resp.text.strip())
+                    tier2_info["raw_text"] = prim_resp.text.strip()
+                    clean_t2 = prim_resp.text.strip()
+                    if clean_t2.startswith("```json"): clean_t2 = clean_t2[7:]
+                    elif clean_t2.startswith("```"): clean_t2 = clean_t2[3:]
+                    if clean_t2.endswith("```"): clean_t2 = clean_t2[:-3]
+                    director_data = json.loads(clean_t2.strip())
                     directives = director_data.get("scenes", [])
                     if directives:
                         for d in directives:
@@ -994,6 +1033,8 @@ async def generate_show(req: ShowRequest):
 
         elapsed_sec = round(time.time() - t_start, 2)
         debug_info = {
+            "is_cloud_ai": ai_mode in ["python_code", "primitive_composer"],
+            "raw_ai_payload": tier1_info.get("raw_text") or tier2_info.get("raw_text") or "本地離線模式，無雲端 AI 原始酬載",
             "model_used": tier1_info.get("model") or tier2_info.get("model") or "本地離線引擎",
             "elapsed_sec": f"{elapsed_sec} 秒",
             "active_tier": "Tier 1: AI 幾何程式設計師 (Python Code)" if ai_mode == "python_code" else ("Tier 2: AI 複合幾何圖元庫 (Primitive Composer)" if ai_mode == "primitive_composer" else "Tier 3: 本地離線智慧語意備援"),
