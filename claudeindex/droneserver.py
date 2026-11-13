@@ -67,10 +67,19 @@ def test_ai():
     except Exception as e:
         available_models = [f"list_error: {str(e)[:150]}"]
     
-    test_candidates = []
+    test_candidates = [
+        "models/gemini-3.5-flash",
+        "models/gemini-3.5-flash-lite",
+        "models/gemini-3.1-flash-lite",
+        "models/gemini-3.6-flash",
+        "models/gemini-omni-flash-preview",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite"
+    ]
     for am in available_models:
-        if isinstance(am, str) and not am.startswith("list_error") and ("flash" in am or "pro" in am):
-            test_candidates.append(am)
+        if isinstance(am, str) and not am.startswith("list_error") and ("3." in am or "gemma" in am):
+            if am not in test_candidates:
+                test_candidates.append(am)
             
     if not test_candidates:
         test_candidates = [
@@ -786,9 +795,11 @@ async def generate_show(req: ShowRequest):
         user_content = f"演出架數: {req.drone_count}\n劇本需求:\n{req.prompt}"
 
         candidate_models = [
-            "models/gemini-3.8-flash", "gemini-3.8-flash",
-            "models/gemini-2.5-flash", "gemini-2.5-flash",
-            "models/gemini-1.5-flash", "gemini-1.5-flash"
+            "models/gemini-3.5-flash",
+            "models/gemini-3.5-flash-lite",
+            "models/gemini-3.1-flash-lite",
+            "models/gemini-3.6-flash",
+            "models/gemini-omni-flash-preview"
         ]
         rendered_scenes = []
         ai_mode = "none"
