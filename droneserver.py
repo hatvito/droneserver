@@ -47,37 +47,24 @@ def read_root():
 @app.get("/api/test-ai")
 def test_ai():
     if not GEMINI_API_KEY:
-        return {"status": "error", "message": "GEMINI_API_KEY is not set in environment"}
+        return {"status": "error", "message": "GEMINI_API_KEY is not set"}
     
     results = {}
-    available_models = []
     client = genai.Client(api_key=GEMINI_API_KEY)
-
-    try:
-        for model_info in client.models.list():
-            available_models.append(getattr(model_info, "name", str(model_info)))
-    except Exception as e:
-        available_models = [f"Error listing: {e}"]
-
-    models_to_test = ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.0-flash", "gemini-2.5-flash"]
-    for m in models_to_test:
+    test_models = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
+    
+    for m in test_models:
         try:
             resp = client.models.generate_content(
                 model=m,
-                contents='ping'
+                contents="ping"
             )
             results[m] = {"status": "success", "text": resp.text.strip()}
-            break
+            return {"status": "ok", "working_model": m, "results": results}
         except Exception as e:
-            results[m] = {"status": "error", "error": str(e), "type": type(e).__name__}
+            results[m] = {"status": "error", "msg": str(e)[:150]}
             
-    return {
-        "status": "tested",
-        "api_key_prefix": (GEMINI_API_KEY[:6] + "...") if len(GEMINI_API_KEY) > 6 else "short",
-        "available_models": available_models[:15],
-        "results": results
-    }
-
+    return {"status": "all_failed", "results": results}
 
 # ----------------- 資料模型定義 -----------------
 class PrimitiveElement(BaseModel):
@@ -548,7 +535,8 @@ async def generate_show(req: ShowRequest):
             print(f"[{req.student_name}] AI 導演成功建構 {len(directives)} 組複合幾何劇幕！")
 
         except Exception as e:
-            print(f"AI 導演解析異常: {str(e)}，啟動智慧語義幾何備援機制...")
+            ai_error_msg = str(e)
+            print(f"AI 導演解析異常: {ai_error_msg}，啟動智慧語義幾何備援機制...")
             lines = [l.strip() for l in req.prompt.split("\n") if l.strip()]
             directives = []
             for idx, line in enumerate(lines):
@@ -694,7 +682,7 @@ async def generate_show(req: ShowRequest):
 
         print(f"[{req.student_name}] 全場幾何渲染完成，共 {len(rendered_scenes)} 幕！")
         ai_mode = "gemini" if "ai_resp" in locals() and ai_resp else "fallback"
-        return {"status": "success", "ai_mode": ai_mode, "data": json.dumps({"scenes": rendered_scenes})}
+        return {"status": "success", "ai_mode": ai_mode, "ai_error": locals().get("ai_error_msg"), "data": json.dumps({"scenes": rendered_scenes})}
 
 if __name__ == '__main__':
     import uvicorn
